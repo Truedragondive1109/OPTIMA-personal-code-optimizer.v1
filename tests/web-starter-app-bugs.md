@@ -128,3 +128,57 @@ The `sherpa-onnx-glue.js` in `@runanywhere/web-onnx@0.1.0-beta.8` now ships with
 - No `createModule is not a function` error (BUG-1 FIXED)
 - No `require is not defined` error (node:path patch working)
 - No `NODERAWFS not supported` error (NODERAWFS patches working)
+
+---
+
+## Run 3: Feb 17, 2026 — Full End-to-End Test Suite (beta.8, clean npm install)
+
+**Environment:** Playwright (Chromium headless), macOS, Vite dev server
+**SDK Version:** @runanywhere/web@0.1.0-beta.8 + web-llamacpp@0.1.0-beta.8 + web-onnx@0.1.0-beta.8
+**Install:** Clean `rm -rf node_modules && npm install` from npm registry
+
+### Test Results — All Testable Tests PASS
+
+| Category | Pass | Fail | Skip |
+|----------|------|------|------|
+| A. App Load & SDK Init | 7 | 0 | 0 |
+| B. Header & Acceleration Badge | 4 | 0 | 0 |
+| C. Tab Bar & Navigation (20 rapid switches) | 8 | 0 | 0 |
+| D. Chat Tab — UI Elements | 9 | 0 | 0 |
+| E. Chat Tab — Interactions | 3 | 0 | 2 |
+| F. Vision Tab — UI Elements | 9 | 0 | 0 |
+| G–H. Vision Camera/Live | 0 | 0 | 10 |
+| I. Voice Tab — UI Elements | 8 | 0 | 0 |
+| J. Voice Interactions | 0 | 0 | 5 |
+| K. ModelBanner States | 4 | 0 | 4 |
+| L. Styling & Theming | 8 | 0 | 0 |
+| M. Cross-Tab State | 4 | 0 | 0 |
+| N. Error Handling & Edge Cases | 5 | 0 | 0 |
+| O. Console Error Audit | 5 | 0 | 0 |
+| **TOTAL** | **74** | **0** | **21** |
+
+Skips are headless-browser limitations (no camera, no microphone, model download tests).
+
+### Key Verified Results
+
+**SDK Initialization:**
+- `[RunAnywhere:RunAnywhere] Initializing RunAnywhere...` — core init
+- `[RunAnywhere:LlamaCppBridge] LlamaCpp WASM loaded` — LLM/VLM backend
+- `[RunAnywhere:LlamaCppProvider] LlamaCpp backend registered` — LLM+VLM capabilities
+- `[RunAnywhere:ONNXProvider] ONNX backend registered` — STT+TTS+VAD capabilities
+
+**Styling Verified:**
+- Dark theme: `rgb(15, 23, 42)`
+- Orange accent: `rgba(255, 85, 0, 1)`
+- Max-width: 600px
+- Responsive at 375px / 768px / 1024px — all render correctly
+
+**Console Audit:**
+- 1 error: WebGPU WASM 404 (EXPECTED)
+- 1 warning: WebGPU fallback (EXPECTED)
+- 0 TypeError / ReferenceError
+- 0 React errors
+- 0 CORS errors
+- 0 unexpected errors
+
+### Bugs Found: NONE (0 new bugs)
