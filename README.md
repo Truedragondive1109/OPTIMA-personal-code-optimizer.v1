@@ -45,17 +45,6 @@ On first load you’ll see “Loading OPTIMA…” while the SDK initializes. Th
 - **Character limit:** Input is limited (e.g. 4000 characters). For code < 3000 chars, the system uses a single LLM pass for better context; larger files are chunked.
 - **Fallback mechanism:** If the model returns the exact same code or invalid output, OPTIMA will retry once with stronger instructions. If it still fails, it safely falls back to the original code without breaking the UI.
 
-### Chat Assistant (floating panel)
-
-| Step | What to do |
-|------|------------|
-| **1. Open chat** | Click the **chat bubble** button at the bottom-right of the page. |
-| **2. Send a message** | Type in the input at the bottom and press **Enter** or click the send button. |
-| **3. Wait for reply** | While the model is thinking, you’ll see a typing animation; then the reply streams in with a cursor. |
-| **4. Close** | Click the **X** on the chat header to close the panel. The chat button remains so you can open it again. |
-
-The chat uses the same on-device LLM as the Code Optimizer. If the model isn’t loaded yet, you may be prompted to download/load it (same as for optimization).
-
 ---
 
 ## Fine details
@@ -64,8 +53,6 @@ The chat uses the same on-device LLM as the Code Optimizer. If the model isn’t
   - **Ctrl/Cmd + Enter** — Run code optimization (when input has code and is under the limit).
   - **Ctrl/Cmd + K** — Clear the input area and output.
 - **Theme:** Use the **sun/moon** icon in the header to switch between light and dark mode. The choice is saved in `localStorage`.
-- **Model banner:** Below the header, a bar shows “No LLM model loaded”, download progress, or “Loading…”. Use **Download & Load** (or **Retry** on error) so optimization and chat work.
-- **Badge:** If WebGPU or CPU acceleration is detected, a small badge appears in the header (e.g. “WebGPU” or “CPU”).
 - **Toast messages:** Short notifications (e.g. “Copied to clipboard!”, “Optimization completed!”) appear briefly at the top-right.
 - **Errors:** If something goes wrong, an error message appears in a red bar; use **Dismiss** to clear it. For runtime errors, the app may show “Something went wrong” and the message; check the browser console (F12) for details.
 
