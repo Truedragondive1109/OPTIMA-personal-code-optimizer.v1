@@ -595,8 +595,87 @@ export function CodeOptimizerTab() {
               <div className="empty-state">
                 <div style={{ fontSize: '2rem', marginBottom: '1rem' }}>⚠️</div>
                 <h3 style={{ color: 'var(--error)' }}>Failed to load model</h3>
-                <p style={{ color: 'var(--text-secondary)', marginBottom: '16px' }}>{currentSdkState.error || 'An error occurred during initialization.'}</p>
-                <button className="btn btn-primary" onClick={initializeSDK}>Retry</button>
+                <p style={{ color: 'var(--text-secondary)', marginBottom: '16px', maxWidth: '600px' }}>
+                  {currentSdkState.error || 'An error occurred during initialization.'}
+                </p>
+                <div style={{ 
+                  background: 'var(--bg-secondary)', 
+                  padding: '16px', 
+                  borderRadius: '8px', 
+                  marginBottom: '16px',
+                  maxWidth: '600px',
+                  textAlign: 'left',
+                  fontSize: '13px',
+                  color: 'var(--text-secondary)'
+                }}>
+                  <strong style={{ color: 'var(--text)', display: 'block', marginBottom: '8px' }}>Troubleshooting:</strong>
+                  <ul style={{ margin: 0, paddingLeft: '20px', lineHeight: '1.6' }}>
+                    <li>Use Chrome 96+ or Edge 96+ (recommended: 120+)</li>
+                    <li>Ensure WebAssembly is enabled in your browser</li>
+                    <li>Check your internet connection (model download required on first use)</li>
+                    <li>Close other tabs/apps to free up memory (~250MB needed)</li>
+                    <li>Try clearing browser cache and refreshing</li>
+                    <li>Check browser console (F12) for detailed error messages</li>
+                    <li>Ensure SharedArrayBuffer is available (requires HTTPS or localhost)</li>
+                    {currentSdkState.error?.includes('insufficient memory') && (
+                      <li style={{ color: 'var(--error)', fontWeight: 'bold' }}>
+                        ⚠️ Low memory detected: Close other applications and try again
+                      </li>
+                    )}
+                    {currentSdkState.error?.includes('corrupted') && (
+                      <li style={{ color: 'var(--error)', fontWeight: 'bold' }}>
+                        ⚠️ Corrupted model file: Clear browser cache/storage and refresh
+                      </li>
+                    )}
+                    {currentSdkState.error?.includes('error state') && (
+                      <li style={{ color: 'var(--error)', fontWeight: 'bold' }}>
+                        ⚠️ Model in error state: Click "Clear Cache & Retry" to reset and re-download
+                      </li>
+                    )}
+                    {currentSdkState.error?.includes('status is') && (
+                      <li style={{ color: 'var(--error)', fontWeight: 'bold' }}>
+                        ⚠️ Model state issue: The model download may have failed. Use "Clear Cache & Retry" to force a fresh download.
+                      </li>
+                    )}
+                  </ul>
+                </div>
+                <div style={{ display: 'flex', gap: '12px', justifyContent: 'center', flexWrap: 'wrap' }}>
+                  <button className="btn btn-primary" onClick={initializeSDK}>Retry</button>
+                  <button 
+                    className="btn" 
+                    onClick={() => {
+                      // Clear OPFS storage if available
+                      if ('storage' in navigator && 'getDirectory' in navigator.storage) {
+                        navigator.storage.getDirectory().then(async (dir) => {
+                          try {
+                            // Try to clear the directory (OPFS iterator support varies by TS DOM lib version)
+                            const iter = (dir as any).values?.() ?? (dir as any).entries?.();
+                            if (iter) {
+                              for await (const entry of iter as AsyncIterable<any>) {
+                                const name = Array.isArray(entry) ? entry[0] : entry?.name;
+                                if (!name) continue;
+                                try {
+                                  await dir.removeEntry(name, { recursive: true });
+                                } catch {}
+                              }
+                            }
+                            alert('Cache cleared. Please refresh the page.');
+                            window.location.reload();
+                          } catch {
+                            alert('Could not clear cache automatically. Please clear browser storage manually and refresh.');
+                          }
+                        }).catch(() => {
+                          initializeSDK();
+                        });
+                      } else {
+                        initializeSDK();
+                      }
+                    }}
+                    title="Clear model cache and retry"
+                  >
+                    Clear Cache & Retry
+                  </button>
+                </div>
               </div>
             )}
 

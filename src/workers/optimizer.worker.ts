@@ -57,58 +57,286 @@ const LLM_SUB_STAGES = [
 // SDK initialization
 // ─────────────────────────────────────────────────────────────────────────────
 async function workerInitSDK() {
-    const {
-        RunAnywhere,
-        SDKEnvironment,
-        ModelManager,
-        ModelCategory,
-        LLMFramework,
-        EventBus,
-    } = await import('@runanywhere/web');
+    try {
+        const {
+            RunAnywhere,
+            SDKEnvironment,
+            ModelManager,
+            ModelCategory,
+            LLMFramework,
+            EventBus,
+        } = await import('@runanywhere/web');
 
-    const { LlamaCPP } = await import('@runanywhere/web-llamacpp');
+        const { LlamaCPP } = await import('@runanywhere/web-llamacpp');
 
-    await RunAnywhere.initialize({ environment: SDKEnvironment.Development, debug: false });
-    await LlamaCPP.register();
+        // Step 1: Initialize SDK
+        try {
+            await RunAnywhere.initialize({ environment: SDKEnvironment.Development, debug: false });
+        } catch (err: any) {
+            throw new Error(`SDK initialization failed: ${err.message || String(err)}`);
+        }
 
-    EventBus.shared.on('llamacpp.wasmLoaded', (evt: any) => {
-        self.postMessage({ type: 'accelerationMode', value: evt.accelerationMode ?? 'cpu' });
-    });
+        // Step 2: Register LlamaCPP backend
+        try {
+            await LlamaCPP.register();
+        } catch (err: any) {
+            throw new Error(`Failed to register LlamaCPP backend: ${err.message || String(err)}. Check browser compatibility (Chrome/Edge 96+, WebAssembly, SharedArrayBuffer).`);
+        }
 
-    RunAnywhere.registerModels([
-        {
-            id: 'lfm2-350m-q4_k_m',
-            name: 'LFM2 350M Q4_K_M',
-            repo: 'LiquidAI/LFM2-350M-GGUF',
-            files: ['LFM2-350M-Q4_K_M.gguf'],
-            framework: LLMFramework.LlamaCpp,
-            modality: ModelCategory.Language,
-            memoryRequirement: 250_000_000,
-        } as any,
-    ]);
-
-    const models = ModelManager.getModels().filter((m: any) => m.modality === ModelCategory.Language);
-    if (models.length === 0) throw new Error('No Language model registered in worker');
-
-    const model = models[0];
-
-    if (model.status !== 'downloaded' && model.status !== 'loaded') {
-        self.postMessage({ type: 'status', value: 'initializing' });
-
-        const unsub = EventBus.shared.on('model.downloadProgress', (evt: any) => {
-            if (evt.modelId === model.id) {
-                self.postMessage({ type: 'progress', value: evt.progress ?? 0 });
-            }
+        EventBus.shared.on('llamacpp.wasmLoaded', (evt: any) => {
+            self.postMessage({ type: 'accelerationMode', value: evt.accelerationMode ?? 'cpu' });
         });
 
-        await ModelManager.downloadModel(model.id);
-        unsub();
-        self.postMessage({ type: 'progress', value: 1 });
-    }
+        // Step 3: Register model catalog
+        RunAnywhere.registerModels([
+            {
+                id: 'lfm2-350m-q4_k_m',
+                name: 'LFM2 350M Q4_K_M',
+                repo: 'LiquidAI/LFM2-350M-GGUF',
+                files: ['LFM2-350M-Q4_K_M.gguf'],
+                framework: LLMFramework.LlamaCpp,
+                modality: ModelCategory.Language,
+                memoryRequirement: 250_000_000,
+            } as any,
+        ]);
 
-    self.postMessage({ type: 'status', value: 'loading_model' });
-    const ok = await ModelManager.loadModel(model.id, { coexist: false });
-    if (!ok) throw new Error('Engine failed to load model into memory');
+        const models = ModelManager.getModels().filter((m: any) => m.modality === ModelCategory.Language);
+        if (models.length === 0) {
+            throw new Error('No Language model registered in worker');
+        }
+
+        const model = models[0];
+        const modelId = model.id;
+        let forceDownload = false;
+
+        // Step 4: Handle model status - download if needed or reset if in error state
+        if (String(model.status).toLowerCase() === 'error') {
+            // Model is in error state - try to reset by re-downloading
+            console.log('[Worker] Model is in error state, attempting to reset by re-downloading...');
+            self.postMessage({ type: 'status', value: 'initializing' });
+            
+            try {
+                // Try to unload/clear the error state first
+                try {
+                    const loadedModel = ModelManager.getLoadedModel(ModelCategory.Language);
+                    if (loadedModel) {
+                        ModelManager.unloadModel(loadedModel.id);
+                        await new Promise(resolve => setTimeout(resolve, 500));
+                    }
+                } catch (err) {
+                    console.warn('[Worker] Could not unload model in error state:', err);
+                }
+
+                // Re-register the model to reset its state
+                RunAnywhere.registerModels([
+                    {
+                        id: 'lfm2-350m-q4_k_m',
+                        name: 'LFM2 350M Q4_K_M',
+                        repo: 'LiquidAI/LFM2-350M-GGUF',
+                        files: ['LFM2-350M-Q4_K_M.gguf'],
+                        framework: LLMFramework.LlamaCpp,
+                        modality: ModelCategory.Language,
+                        memoryRequirement: 250_000_000,
+                    } as any,
+                ]);
+
+                // Get fresh model reference
+                const freshModels = ModelManager.getModels().filter((m: any) => m.modality === ModelCategory.Language);
+                if (freshModels.length === 0) {
+                    throw new Error('Failed to re-register model');
+                }
+                const freshModel = freshModels[0];
+
+                // Force re-download
+                const unsub = EventBus.shared.on('model.downloadProgress', (evt: any) => {
+                    if (evt.modelId === freshModel.id) {
+                        self.postMessage({ type: 'progress', value: evt.progress ?? 0 });
+                    }
+                });
+
+                await ModelManager.downloadModel(freshModel.id);
+                unsub();
+                self.postMessage({ type: 'progress', value: 1 });
+
+                // Step 6 will re-read current status from ModelManager.
+                forceDownload = false;
+            } catch (err: any) {
+                console.warn('[Worker] Reset from error state failed. Falling back to forced re-download.', err);
+                forceDownload = true;
+            }
+        } else if (String(model.status).toLowerCase() !== 'downloaded' && String(model.status).toLowerCase() !== 'loaded') {
+            forceDownload = true;
+        }
+
+        if (forceDownload) {
+            // Normal download flow
+            self.postMessage({ type: 'status', value: 'initializing' });
+
+            try {
+                const unsub = EventBus.shared.on('model.downloadProgress', (evt: any) => {
+                    if (evt.modelId === modelId) {
+                        self.postMessage({ type: 'progress', value: evt.progress ?? 0 });
+                    }
+                });
+
+                await ModelManager.downloadModel(modelId);
+                unsub();
+                self.postMessage({ type: 'progress', value: 1 });
+            } catch (err: any) {
+                throw new Error(`Model download failed: ${err.message || String(err)}. If this persists, click "Clear Cache & Retry".`);
+            }
+        }
+
+        // Step 5: Unload any existing models first (clean slate)
+        try {
+            const loadedModel = ModelManager.getLoadedModel(ModelCategory.Language);
+            if (loadedModel) {
+                console.log('[Worker] Unloading existing model before reload:', loadedModel.id);
+                ModelManager.unloadModel(loadedModel.id);
+                // Give it a moment to fully unload
+                await new Promise(resolve => setTimeout(resolve, 500));
+            }
+        } catch (err: any) {
+            console.warn('[Worker] Error unloading existing model (continuing anyway):', err);
+        }
+
+        // Step 6: Load model into memory with retry logic
+        self.postMessage({ type: 'status', value: 'loading_model' });
+        
+        let loadAttempts = 0;
+        const maxLoadAttempts = 3;
+        let lastError: Error | null = null;
+
+        while (loadAttempts < maxLoadAttempts) {
+            try {
+                loadAttempts++;
+                
+                // Check model status before loading
+                const currentModel = ModelManager.getModels().find((m: any) => m.id === modelId);
+                if (!currentModel) {
+                    throw new Error(`Model ${modelId} not found in catalog`);
+                }
+
+                const currentStatus = String(currentModel.status).toLowerCase();
+
+                if (currentStatus === 'loaded') {
+                    console.log('[Worker] Model already loaded, skipping');
+                    break;
+                }
+
+                // Handle error state - should have been reset in Step 4, but check again
+                if (currentStatus === 'error') {
+                    if (loadAttempts === 1) {
+                        // First attempt - try to reset by re-registering
+                        console.log('[Worker] Model still in error state, attempting reset...');
+                        RunAnywhere.registerModels([
+                            {
+                                id: 'lfm2-350m-q4_k_m',
+                                name: 'LFM2 350M Q4_K_M',
+                                repo: 'LiquidAI/LFM2-350M-GGUF',
+                                files: ['LFM2-350M-Q4_K_M.gguf'],
+                                framework: LLMFramework.LlamaCpp,
+                                modality: ModelCategory.Language,
+                                memoryRequirement: 250_000_000,
+                            } as any,
+                        ]);
+                        await new Promise(resolve => setTimeout(resolve, 1000));
+                        continue; // Retry with fresh model state
+                    } else {
+                        // Secondary recovery path: force re-download and retry once more.
+                        self.postMessage({ type: 'status', value: 'initializing' });
+                        const unsub = EventBus.shared.on('model.downloadProgress', (evt: any) => {
+                            if (evt.modelId === currentModel.id) {
+                                self.postMessage({ type: 'progress', value: evt.progress ?? 0 });
+                            }
+                        });
+                        try {
+                            await ModelManager.downloadModel(currentModel.id);
+                            self.postMessage({ type: 'progress', value: 1 });
+                            await new Promise(resolve => setTimeout(resolve, 500));
+                            continue;
+                        } finally {
+                            unsub();
+                        }
+                    }
+                }
+
+                if (currentStatus !== 'downloaded' && currentStatus !== 'loaded') {
+                    // Recover from transient "registered"/"downloading" states by forcing a download.
+                    if (currentStatus === 'registered' || currentStatus === 'downloading') {
+                        self.postMessage({ type: 'status', value: 'initializing' });
+                        const unsub = EventBus.shared.on('model.downloadProgress', (evt: any) => {
+                            if (evt.modelId === currentModel.id) {
+                                self.postMessage({ type: 'progress', value: evt.progress ?? 0 });
+                            }
+                        });
+                        try {
+                            await ModelManager.downloadModel(currentModel.id);
+                            self.postMessage({ type: 'progress', value: 1 });
+                            continue;
+                        } finally {
+                            unsub();
+                        }
+                    }
+
+                    // If another internal flow started loading, briefly wait and retry.
+                    if (currentStatus === 'loading') {
+                        await new Promise(resolve => setTimeout(resolve, 500));
+                        continue;
+                    }
+
+                    throw new Error(`Model status is "${currentStatus}", expected "downloaded" or "loaded". Try refreshing the page.`);
+                }
+
+                // Attempt to load
+                const ok = await ModelManager.loadModel(modelId, { coexist: false });
+                
+                if (ok) {
+                    // Verify it's actually loaded
+                    const verifyLoaded = ModelManager.getLoadedModel(ModelCategory.Language);
+                    if (verifyLoaded && verifyLoaded.id === modelId) {
+                        console.log('[Worker] Model loaded successfully');
+                        return; // Success!
+                    } else {
+                        throw new Error('Model reported loaded but verification failed');
+                    }
+                } else {
+                    // Load returned false - might be memory issue or corrupted file
+                    if (loadAttempts < maxLoadAttempts) {
+                        console.warn(`[Worker] Load attempt ${loadAttempts} failed, retrying...`);
+                        // Wait before retry
+                        await new Promise(resolve => setTimeout(resolve, 1000 * loadAttempts));
+                        // Try unloading again before retry
+                        try {
+                            const loaded = ModelManager.getLoadedModel(ModelCategory.Language);
+                            if (loaded) ModelManager.unloadModel(loaded.id);
+                            await new Promise(resolve => setTimeout(resolve, 500));
+                        } catch {}
+                        continue;
+                    } else {
+                        throw new Error(`Model loading failed after ${maxLoadAttempts} attempts. Possible causes: insufficient memory (need ~250MB free), corrupted model file, or browser limitations. Try closing other tabs/apps and refresh the page.`);
+                    }
+                }
+            } catch (err: any) {
+                lastError = err;
+                if (loadAttempts < maxLoadAttempts && !err.message?.includes('not found') && !err.message?.includes('status is')) {
+                    console.warn(`[Worker] Load attempt ${loadAttempts} error:`, err);
+                    await new Promise(resolve => setTimeout(resolve, 1000 * loadAttempts));
+                    continue;
+                } else {
+                    throw err;
+                }
+            }
+        }
+
+        if (lastError) {
+            throw lastError;
+        }
+    } catch (err: any) {
+        // Re-throw with enhanced context
+        const message = err.message || String(err);
+        throw new Error(message);
+    }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

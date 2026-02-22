@@ -807,10 +807,21 @@ html:not(.dark-mode) .model-status-bar {
   cursor: pointer;
   transition: all var(--transition);
   appearance: none;
+  color-scheme: dark light;
   background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='10' viewBox='0 0 10 10'%3E%3Cpath fill='%238888a8' d='M5 7.5L0.5 2.5h9z'/%3E%3C/svg%3E");
   background-repeat: no-repeat;
   background-position: right 10px center;
   font-family: var(--font-ui);
+}
+
+.optimizer-select option {
+  background: #1a1a2e;
+  color: #e8e8f0;
+}
+
+.optimizer-select option:checked {
+  background: #3d6245;
+  color: #fff;
 }
 
 .optimizer-select:hover,
