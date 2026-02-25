@@ -919,6 +919,124 @@ html:not(.dark-mode) .model-status-bar {
   flex-wrap: wrap;
 }
 
+/* Overview Panel */
+.overview-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  padding: 20px;
+  background: var(--bg-secondary);
+  border-radius: 12px;
+  border: 1px solid var(--border);
+  max-height: calc(100vh - 200px);
+  overflow-y: auto;
+}
+
+.overview-section {
+  background: var(--bg-glass);
+  padding: 16px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+}
+
+.overview-header {
+  margin: 0 0 12px 0;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.complexity-badge {
+  font-size: 16px;
+  font-weight: 700;
+  padding: 6px 12px;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  min-width: 80px;
+  text-align: center;
+  display: inline-block;
+}
+
+.complexity-green { color: var(--complexity-green); }
+.complexity-blue { color: var(--complexity-blue); }
+.complexity-orange { color: var(--complexity-red); }
+.complexity-red { color: var(--complexity-red); }
+.complexity-gray { color: var(--complexity-gray); }
+
+.pattern-item {
+  background: var(--bg-secondary);
+  padding: 8px 12px;
+  border-radius: 4px;
+  border: 1px solid var(--border);
+  border-left: 4px solid var(--border);
+  margin-bottom: 8px;
+}
+
+.pattern-severity {
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  padding: 2px 6px;
+  border-radius: 3px;
+  color: white;
+}
+
+.pattern-high { background: var(--error); }
+.pattern-medium { background: var(--warning); }
+.pattern-low { background: var(--success); }
+
+.confidence-bar {
+  height: 8px;
+  background: var(--border);
+  border-radius: 4px;
+  margin-bottom: 8px;
+}
+
+.confidence-fill {
+  height: 100%;
+  border-radius: 4px;
+  transition: width 0.3s ease;
+}
+
+.insight-grid {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.insight-item {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+}
+
+.insight-icon {
+  font-size: 20px;
+  color: var(--text-light);
+  min-width: 24px;
+  text-align: center;
+}
+
+.insight-content {
+  flex: 1;
+}
+
+.insight-title {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.insight-description {
+  margin: 2px 0 0 0;
+  font-size: 11px;
+  color: var(--text-secondary);
+  line-height: 1.3;
+}
+
 /* Output Tabs */
 .output-tabs {
   display: flex;
@@ -1918,71 +2036,87 @@ html:not(.dark-mode) .toast-notification {
 .pipeline-stages {
   display: flex;
   align-items: center;
-  gap: 0;
   justify-content: center;
   flex-wrap: wrap;
-  gap: 4px;
+  gap: 2px;
+  padding: 4px 0;
 }
 
+/* Base pill — dim but readable */
 .pipeline-stage {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: 7px;
   font-size: 11px;
   font-weight: 600;
-  color: var(--text-light);
-  padding: 4px 10px;
+  color: rgba(255, 255, 255, 0.35);
+  padding: 5px 12px;
   border-radius: 99px;
-  border: 1px solid transparent;
-  transition: all 0.3s ease;
+  border: 1px solid rgba(255, 255, 255, 0.07);
+  background: transparent;
+  transition: all 0.35s cubic-bezier(0.4, 0, 0.2, 1);
+  user-select: none;
 }
 
+/* Active — bright purple glow, clearly lit */
 .pipeline-stage.active {
-  color: var(--primary-bright);
-  border-color: rgba(124, 106, 247, 0.3);
-  background: rgba(124, 106, 247, 0.08);
+  color: #fff;
+  border-color: rgba(124, 106, 247, 0.6);
+  background: rgba(124, 106, 247, 0.18);
+  box-shadow: 0 0 12px rgba(124, 106, 247, 0.4), inset 0 0 8px rgba(124, 106, 247, 0.1);
 }
 
+/* Done — green tick, subtly lit */
 .pipeline-stage.done {
   color: var(--success);
-  border-color: rgba(34, 197, 94, 0.2);
-  background: rgba(34, 197, 94, 0.06);
+  border-color: rgba(34, 197, 94, 0.35);
+  background: rgba(34, 197, 94, 0.08);
 }
 
+/* Pending (future stages) — extra dim */
+.pipeline-stage.pending {
+  color: rgba(255, 255, 255, 0.18);
+  border-color: transparent;
+}
+
+/* Dot container */
 .stage-dot {
   display: flex;
   align-items: center;
   justify-content: center;
-  width: 14px;
-  height: 14px;
-  font-size: 10px;
+  width: 16px;
+  height: 16px;
+  font-size: 11px;
+  flex-shrink: 0;
 }
 
+/* Active pulse dot */
 .stage-pulse {
   display: inline-block;
-  width: 7px;
-  height: 7px;
+  width: 8px;
+  height: 8px;
   border-radius: 50%;
   background: var(--primary-bright);
-  animation: stagePulse 1s ease-in-out infinite;
+  box-shadow: 0 0 6px var(--primary-bright);
+  animation: stagePulse 0.9s ease-in-out infinite;
 }
 
 @keyframes stagePulse {
-
-  0%,
-  100% {
-    opacity: 0.4;
-    transform: scale(0.8);
+  0%, 100% {
+    opacity: 0.5;
+    transform: scale(0.75);
+    box-shadow: 0 0 4px var(--primary-bright);
   }
-
   50% {
     opacity: 1;
-    transform: scale(1.2);
+    transform: scale(1.25);
+    box-shadow: 0 0 10px var(--primary-bright), 0 0 20px rgba(124, 106, 247, 0.5);
   }
 }
 
 .stage-label {
   white-space: nowrap;
+  letter-spacing: 0.2px;
 }
 
 /* Processing state overrides: pipeline shows inline, not absolute overlay */

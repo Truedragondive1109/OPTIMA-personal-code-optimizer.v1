@@ -2,6 +2,7 @@ import { useState, useRef, useCallback, useEffect } from 'react';
 import { useSDKState, globalWorker, initializeSDK } from '../hooks/useModelLoader';
 import { ExplainPanel } from './ExplainPanel';
 import { DiffViewer } from './DiffViewer';
+import OverviewPanel from './OverviewPanel';
 import { type OptimizationResult, type OptimizationFocus, isFullySupported } from '../lib/promptBuilder';
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -124,7 +125,7 @@ const LOADING_MESSAGES = [
   "Running a sanity check...",
 ];
 
-type OutputTab = 'code' | 'diff' | 'explain';
+type OutputTab = 'code' | 'diff' | 'explain' | 'overview';
 
 
 
@@ -135,18 +136,59 @@ type OutputTab = 'code' | 'diff' | 'explain';
 const STAGE_ORDER = ['Understanding Code', 'Optimizing', 'Refining Optimization', 'Finalizing Output'];
 
 function PipelineStages({ current }: { current: string }) {
+  // currentIdx is -1 when stage is 'idle' — treat as nothing active yet
+  const currentIdx = STAGE_ORDER.indexOf(current);
+
   return (
     <div className="pipeline-stages">
       {STAGE_ORDER.map((stage, i) => {
-        const currentIdx = STAGE_ORDER.indexOf(current);
-        const isDone = i < currentIdx;
-        const isActive = stage === current;
+        const isDone   = currentIdx > 0 && i < currentIdx;
+        const isActive = currentIdx >= 0 && stage === current;
+        const isPending = currentIdx < 0 || i > currentIdx;
+
         return (
-          <div key={stage} className={`pipeline-stage ${isDone ? 'done' : ''} ${isActive ? 'active' : ''}`}>
-            <div className="stage-dot">
-              {isDone ? '✓' : isActive ? <span className="stage-pulse" /> : '○'}
+          <div key={stage} style={{ display: 'flex', alignItems: 'center' }}>
+            {/* Connector line between stages */}
+            {i > 0 && (
+              <div style={{
+                width: '24px',
+                height: '2px',
+                borderRadius: '2px',
+                flexShrink: 0,
+                transition: 'background 0.4s ease',
+                background: isDone
+                  ? 'var(--success)'
+                  : isActive
+                  ? 'linear-gradient(90deg, var(--success) 0%, var(--primary) 100%)'
+                  : 'rgba(255,255,255,0.08)',
+              }} />
+            )}
+
+            <div className={[
+              'pipeline-stage',
+              isDone   ? 'done'    : '',
+              isActive ? 'active'  : '',
+              isPending && currentIdx >= 0 ? 'pending' : '',
+            ].filter(Boolean).join(' ')}>
+
+              {/* Dot / icon */}
+              <div className="stage-dot">
+                {isDone
+                  ? <span style={{ fontSize: '11px', color: 'var(--success)', fontWeight: 700 }}>✓</span>
+                  : isActive
+                  ? <span className="stage-pulse" />
+                  : <span style={{
+                      display: 'inline-block',
+                      width: '7px', height: '7px',
+                      borderRadius: '50%',
+                      background: 'rgba(255,255,255,0.15)',
+                      border: '1px solid rgba(255,255,255,0.2)',
+                    }} />
+                }
+              </div>
+
+              <span className="stage-label">{stage}</span>
             </div>
-            <span className="stage-label">{stage}</span>
           </div>
         );
       })}
@@ -228,14 +270,7 @@ export function CodeOptimizerTab() {
         setChunkProgress(null);
         setStreamActive(false);
         setOutputTab('explain');
-
-        // If the model fell back to the original (e.g. due to truncation or
-        // missing elements), show a calm info toast instead of a scary error.
-        if (parsed._no_change && parsed._parse_warning) {
-          showToast('No safe changes found — original code preserved.');
-        } else {
-          showToast('Optimization complete!');
-        }
+        showToast('Optimization complete!');
       } else if (msg.type === 'error') {
         streamBufferRef.current = '';
         setError(msg.value);
@@ -315,75 +350,6 @@ export function CodeOptimizerTab() {
     setPipelineStage('idle');
   }, []);
 
-  // ── Syntax pre-check — runs in <5ms, no LLM needed ────────────────────────
-  // Returns a short human-readable error string, or null if code looks OK.
-  const detectObviousSyntaxErrors = useCallback((code: string, lang: string): string | null => {
-    const lines = code.split('\n');
-
-    // 1. Bracket / brace / paren balance
-    const openers: Record<string, string> = { '{': '}', '(': ')', '[': ']' };
-    const matchFor: Record<string, string> = { '}': '{', ')': '(', ']': '[' };
-    const stack: string[] = [];
-    let inString = false;
-    let stringChar = '';
-    let inLineComment = false;
-    let inBlockComment = false;
-
-    for (let ci = 0; ci < code.length; ci++) {
-      const ch = code[ci];
-      const next = code[ci + 1] ?? '';
-
-      // Block comment handling (C-style)
-      if (!inString && !inLineComment && ch === '/' && next === '*') { inBlockComment = true; ci++; continue; }
-      if (inBlockComment && ch === '*' && next === '/') { inBlockComment = false; ci++; continue; }
-      if (inBlockComment) continue;
-
-      // Line comment handling
-      if (!inString && (ch === '/' && next === '/') || (ch === '#' && (lang === 'Python'))) { inLineComment = true; continue; }
-      if (inLineComment && ch === '\n') { inLineComment = false; continue; }
-      if (inLineComment) continue;
-
-      // String tracking
-      if (!inString && (ch === '"' || ch === "'" || ch === '`')) { inString = true; stringChar = ch; continue; }
-      if (inString && ch === stringChar && code[ci - 1] !== '\\') { inString = false; continue; }
-      if (inString) continue;
-
-      if (openers[ch]) { stack.push(ch); }
-      else if (matchFor[ch]) {
-        if (stack.length === 0 || stack[stack.length - 1] !== matchFor[ch]) {
-          return `Unexpected '${ch}' — no matching '${matchFor[ch]}'`;
-        }
-        stack.pop();
-      }
-    }
-
-    if (stack.length > 0) {
-      const unclosed = stack[stack.length - 1];
-      return `Unclosed '${unclosed}' — missing '${openers[unclosed]}'`;
-    }
-
-    // 2. Empty function / class bodies that are clearly broken stubs
-    // (only flag if the whole file is nothing but a stub)
-    const nonEmpty = lines.filter(l => l.trim() && !l.trim().startsWith('//') && !l.trim().startsWith('#'));
-    if (nonEmpty.length === 1 && /^(function|class|def|fn )\s*\w*\s*[({]?$/.test(nonEmpty[0].trim())) {
-      return 'Code appears to be an empty stub with no body';
-    }
-
-    // 3. Runaway string — odd number of unescaped quotes on a single line
-    for (let li = 0; li < lines.length; li++) {
-      const line = lines[li];
-      // Skip comment lines
-      if (/^\s*(\/\/|#)/.test(line)) continue;
-      // Count unescaped double-quotes outside of template literals
-      const dq = (line.match(/(?<!\\)"/g) || []).length;
-      const sq = (line.match(/(?<!\\)'/g) || []).length;
-      if (dq % 2 !== 0) return `Unclosed string on line ${li + 1} (odd number of ")`;
-      if (sq % 2 !== 0) return `Unclosed string on line ${li + 1} (odd number of ')`;
-    }
-
-    return null;
-  }, []);
-
   const optimize = useCallback(async () => {
     const code = codeInput.trim();
     if (!code) return setError('Please paste some code to optimize.');
@@ -391,15 +357,6 @@ export function CodeOptimizerTab() {
 
     if (currentSdkState.status !== 'ready') {
       return setError('Model not ready. Please wait for the AI to load.');
-    }
-
-    // ── Pre-flight syntax check ──────────────────────────────────────────────
-    // Catch obvious structural errors before burning model inference time.
-    // We only check bracket balance and a few clear syntax signals — we are
-    // not trying to be a full parser, just catch the worst offenders.
-    const syntaxError = detectObviousSyntaxErrors(code, language);
-    if (syntaxError) {
-      return setError(`Syntax error detected: ${syntaxError} — please fix your code before optimizing.`);
     }
 
     setOptimizing(true);
@@ -567,7 +524,7 @@ export function CodeOptimizerTab() {
               <input
                 ref={fileInputRef}
                 type="file"
-                accept=".js,.jsx,.ts,.tsx,.py,.java,.cpp,.cc,.cxx,.txt"
+                accept=".js,.jsx,.ts,.tsx,.py,.java,.cpp,.cc,.cxx,.c,.cs,.go,.rs,.php,.rb,.swift,.kt,.html,.htm,.css,.sql,.sh,.bash,.dart,.scala,.txt"
                 onChange={handleFileImport}
                 style={{ display: 'none' }}
               />
@@ -596,6 +553,10 @@ export function CodeOptimizerTab() {
             {isResult && (
               <div className="output-tabs">
                 <button
+                  className={`output-tab ${outputTab === 'overview' ? 'active' : ''}`}
+                  onClick={() => setOutputTab('overview')}
+                >Overview</button>
+                <button
                   className={`output-tab ${outputTab === 'code' ? 'active' : ''}`}
                   onClick={() => setOutputTab('code')}
                   style={isNoChange ? { opacity: 0.5 } : {}}
@@ -611,11 +572,9 @@ export function CodeOptimizerTab() {
               </div>
             )}
 
-            {isResult && (!isNoChange || result?._parse_warning) && (
+            {isResult && !isNoChange && (
               <div className="code-actions">
-                {!isNoChange && (
-                  <button className="btn btn-sm btn-primary" onClick={() => setCodeInput(outputCode)}>Use Optimized</button>
-                )}
+                <button className="btn btn-sm btn-primary" onClick={() => setCodeInput(outputCode)}>Use Optimized</button>
                 <button className="btn btn-sm" onClick={() => copyToClipboard(outputCode)}>Copy</button>
                 <button className="btn btn-sm" onClick={() => exportToFile(outputCode)}>
                   <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4M7 10l5 5 5-5M12 15V3" /></svg>
@@ -800,23 +759,14 @@ export function CodeOptimizerTab() {
               </div>
             )}
 
+            {/* ─── RESULT: OVERVIEW TAB ─── */}
+            {isResult && outputTab === 'overview' && (
+              <OverviewPanel result={result} />
+            )}
+
+            {/* ─── RESULT: CODE TAB ─── */}
             {isResult && outputTab === 'code' && (
-              // Fallback: model couldn't improve — show original code with a soft notice
-              (isNoChange && result?._parse_warning) ? (
-                <div style={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
-                  <div style={{
-                    display: 'flex', alignItems: 'center', gap: '8px',
-                    padding: '8px 14px', margin: '8px 8px 0',
-                    background: 'rgba(234,179,8,0.08)', border: '1px solid rgba(234,179,8,0.25)',
-                    borderRadius: '6px', fontSize: '12px', color: 'var(--text-secondary)',
-                  }}>
-                    <span>🔄</span>
-                    <span>No safe improvement found — showing your original code. Try a smaller snippet or different focus.</span>
-                  </div>
-                  <pre className="code-preview" style={{ flex: 1, margin: '8px' }}>{outputCode}</pre>
-                </div>
-              ) : isNoChange ? (
-                // Genuine no-change — code is already optimal, nothing to show
+              isNoChange ? (
                 <div className="empty-state">
                   <div style={{ fontSize: '2rem', marginBottom: '1rem' }}>✅</div>
                   <h3>No changes needed</h3>

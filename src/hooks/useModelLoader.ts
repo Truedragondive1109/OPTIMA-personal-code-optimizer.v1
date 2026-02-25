@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import OptimizerWorker from '../workers/optimizer.worker?worker';
+import OptimizerWorker from '../workers/optimizer_worker?worker';
 
 export type LoaderState = 'idle' | 'initializing' | 'loading_model' | 'ready' | 'error';
 

@@ -3,10 +3,10 @@ import { buildPrompt, normalizeLLMOutput } from '../lib/promptBuilder';
 import { TextGeneration } from '@runanywhere/web-llamacpp';
 import type { OptimizationFocus } from '../lib/promptBuilder';
 
-const INFERENCE_TIMEOUT_MS = 30_000;
-const MAX_NEW_TOKENS = 400;
-const TEMPERATURE = 0.05;
-const MAX_INPUT_LINES = 50; // Progressive optimization threshold
+const INFERENCE_TIMEOUT_MS = 90_000;          // Fix 2: 90s for CPU inference
+const MAX_NEW_TOKENS = 1200;                   // Fix 1: room for full sort algos
+const TEMPERATURE = 0.05;                      // Lower for more consistent output
+const MAX_INPUT_LINES = 80;                    // Fix 7: avoid chunking sort combos
 
 let modelLoaded = false;
 let modelInitializing = false;
@@ -40,14 +40,14 @@ async function workerInitSDK() {
 
     RunAnywhere.registerModels([
         {
-            id: 'lfm2-350m-q4_k_m',
-            name: 'LFM2 350M Q4_K_M',
-            repo: 'LiquidAI/LFM2-350M-GGUF',
-            files: ['LFM2-350M-Q4_K_M.gguf'],
+            id: 'qwen2.5-0.5b-instruct-q4_0',
+            name: 'Qwen2.5 0.5B Instruct Q4_0',
+            repo: 'Qwen/Qwen2.5-0.5B-Instruct-GGUF',
+            files: ['qwen2.5-0.5b-instruct-q4_0.gguf'],
             framework: LLMFramework.LlamaCpp,
             modality: ModelCategory.Language,
-            memoryRequirement: 250_000_000,
-        } as any,
+            memoryRequirement: 350_000_000,
+        },
     ]);
 
     const model = ModelManager.getModels().find((m: any) => m.modality === ModelCategory.Language);
@@ -98,7 +98,13 @@ async function workerInitSDK() {
     }
 }
 
-async function runLLMCall(prompt: string, retryCount: number = 0): Promise<string> {
+// Fix 3: accept originalCode + language so retries can rebuild a meaningful prompt
+async function runLLMCall(
+    prompt: string,
+    originalCode: string = '',
+    language: string = '',
+    retryCount: number = 0,
+): Promise<string> {
     let output = '';
     let firstTokenSent = false;
     let timeoutId: ReturnType<typeof setTimeout> | null = null;
@@ -149,34 +155,42 @@ async function runLLMCall(prompt: string, retryCount: number = 0): Promise<strin
     }
 
     if (!output.trim()) {
-        // Retry with progressively simpler prompts if empty output
+        // Fix 3: retries use the actual original code, not slices of the prompt string
         if (retryCount === 0) {
-            const simplePrompt = 'Optimize this code:\n' + prompt.split('\n').slice(-3).join('\n');
+            const lang = language || 'code';
+            const fence = lang.toLowerCase();
+            const simplePrompt =
+                `Optimize this ${lang} code and return the complete result in a fenced code block:\n` +
+                `\`\`\`${fence}\n${originalCode}\n\`\`\`\nOutput:`;
             self.postMessage({ type: 'retry_clear' });
-            return runLLMCall(simplePrompt, 1);
+            return runLLMCall(simplePrompt, originalCode, language, 1);
         } else if (retryCount === 1) {
-            const verySimplePrompt = 'Complete this code optimization:\n' + prompt.split('\n').slice(-2).join('\n');
+            const lang = language || 'code';
+            const fence = lang.toLowerCase();
+            const verySimplePrompt =
+                `Return ONLY the optimized ${lang} code below in a fenced code block. ` +
+                `Do not explain. Do not cut off.\n` +
+                `\`\`\`${fence}\n${originalCode}\n\`\`\`\nOutput:`;
             self.postMessage({ type: 'retry_clear' });
-            return runLLMCall(verySimplePrompt, 2);
+            return runLLMCall(verySimplePrompt, originalCode, language, 2);
         }
         throw new Error('Model returned empty output after retries');
     }
 
-    // Check if output appears incomplete
-    const isIncomplete = 
+    // Fix 8: tighten -> check so Python type hints don't trigger a false retry
+    const isIncomplete =
         output.endsWith('...') ||
         output.endsWith('..') ||
-        output.endsWith(' ->') ||
+        output.endsWith(' -> ') ||          // dangling arrow only (space on both sides)
         (output.endsWith('{') && !output.includes('}')) ||
         (output.endsWith('(') && !output.includes(')')) ||
-        output.match(/\b(if|for|while|function|class)\s*$/i) ||
+        output.match(/\b(if|for|while|function|class|def)\s*$/i) ||
         output.match(/(\{|\\|\/\*)\s*$/);
 
     if (isIncomplete && retryCount < 2) {
-        // Retry with request for complete output
         const completePrompt = prompt + '\n\nIMPORTANT: Return the COMPLETE optimized code, do not cut off mid-sentence.';
         self.postMessage({ type: 'retry_clear' });
-        return runLLMCall(completePrompt, retryCount + 1);
+        return runLLMCall(completePrompt, originalCode, language, retryCount + 1);
     }
 
     return limitOutputToTokens(output, MAX_NEW_TOKENS);
@@ -229,7 +243,7 @@ async function optimizeChunk(chunk: string, language: string, focus: Optimizatio
     const prompt = buildPrompt(chunk, language, focus, analysis);
     
     self.postMessage({ type: 'substage', value: `Optimizing chunk...` });
-    const modelOutput = await runLLMCall(prompt);
+    const modelOutput = await runLLMCall(prompt, chunk, language);
     
     const parsed = normalizeLLMOutput(modelOutput, chunk, analysis, language);
 
@@ -315,7 +329,7 @@ self.onmessage = async (e: MessageEvent<any>) => {
                 // ── Single-chunk path ──────────────────────────────────────
                 const fullPrompt = buildPrompt(code, language, focus, analysis);
                 self.postMessage({ type: 'stage', value: 'Optimizing' });
-                const modelOutput = await runLLMCall(fullPrompt);
+                const modelOutput = await runLLMCall(fullPrompt, code, language);
                 self.postMessage({ type: 'stream_idle' });
 
                 self.postMessage({ type: 'stage', value: 'Finalizing Output' });

@@ -52,7 +52,14 @@ function normalizeCode(code: string): string {
 //   4. Ending the prompt right before where the model should start writing
 // ---------------------------------------------------------------------------
 
-const FEW_SHOT_EXAMPLE = `
+// ---------------------------------------------------------------------------
+// Fix 4: Per-language few-shot examples.
+// Small LLMs anchor their output format on the example, so the language must
+// match the actual input to avoid JS/Python syntax bleed.
+// ---------------------------------------------------------------------------
+
+const FEW_SHOT_EXAMPLES: Record<string, string> = {
+    JavaScript: `
 ### EXAMPLE
 Input:
 \`\`\`javascript
@@ -69,8 +76,133 @@ function add(a, b) {
   return result;
 }
 \`\`\`
-### END EXAMPLE
-`.trim();
+### END EXAMPLE`.trim(),
+
+    TypeScript: `
+### EXAMPLE
+Input:
+\`\`\`typescript
+function getNames(users: Array<{ name: string }>): string[] {
+  var result: string[] = [];
+  for (var i = 0; i < users.length; i++) {
+    result.push(users[i].name);
+  }
+  return result;
+}
+\`\`\`
+Output:
+\`\`\`typescript
+function getNames(users: Array<{ name: string }>): string[] {
+  return users.map(u => u.name);
+}
+\`\`\`
+### END EXAMPLE`.trim(),
+
+    Python: `
+### EXAMPLE
+Input:
+\`\`\`python
+def bubble_sort(arr):
+    n = len(arr)
+    for i in range(n):
+        for j in range(n - i - 1):
+            if arr[j] > arr[j + 1]:
+                arr[j], arr[j + 1] = arr[j + 1], arr[j]
+    return arr
+\`\`\`
+Output:
+\`\`\`python
+def bubble_sort(arr):
+    n = len(arr)
+    for i in range(n - 1):
+        swapped = False
+        for j in range(n - i - 1):
+            if arr[j] > arr[j + 1]:
+                arr[j], arr[j + 1] = arr[j + 1], arr[j]
+                swapped = True
+        if not swapped:
+            break
+    return arr
+\`\`\`
+### END EXAMPLE`.trim(),
+
+    Java: `
+### EXAMPLE
+Input:
+\`\`\`java
+public int sumArray(int[] arr) {
+    int sum = 0;
+    for (int i = 0; i < arr.length; i++) {
+        sum = sum + arr[i];
+    }
+    return sum;
+}
+\`\`\`
+Output:
+\`\`\`java
+public int sumArray(int[] arr) {
+    int sum = 0;
+    for (int val : arr) {
+        sum += val;
+    }
+    return sum;
+}
+\`\`\`
+### END EXAMPLE`.trim(),
+
+    'C++': `
+### EXAMPLE
+Input:
+\`\`\`cpp
+int findMax(std::vector<int>& v) {
+    int max = v[0];
+    for (int i = 1; i < v.size(); i++) {
+        if (v[i] > max) max = v[i];
+    }
+    return max;
+}
+\`\`\`
+Output:
+\`\`\`cpp
+int findMax(const std::vector<int>& v) {
+    return *std::max_element(v.begin(), v.end());
+}
+\`\`\`
+### END EXAMPLE`.trim(),
+};
+
+/** Returns the few-shot example whose language matches the input code. */
+function getFewShotExample(language: string): string {
+    return FEW_SHOT_EXAMPLES[language] ?? FEW_SHOT_EXAMPLES['JavaScript'];
+}
+
+// Map language names to their fenced-code-block identifiers
+const FENCE_TAG: Record<string, string> = {
+    JavaScript:  'javascript',
+    TypeScript:  'typescript',
+    Python:      'python',
+    Java:        'java',
+    'C++':       'cpp',
+};
+
+
+const SYSTEM_PROMPT = `You are an expert code optimizer specializing in conservative, performance-focused improvements. You work with the Qwen2.5 model, which excels at understanding code patterns and making precise optimizations.
+
+Your core principles:
+1. **Preserve functionality** - Never break existing logic
+2. **Minimal changes** - Only modify what clearly improves performance
+3. **Maintain readability** - Keep code clean and understandable
+4. **Focus on bottlenecks** - Target actual performance issues
+5. **Respect language idioms** - Use language-appropriate patterns
+
+Optimization priorities (in order):
+1. Algorithmic improvements (O(n²) → O(n), etc.)
+2. Memory usage optimization
+3. Loop efficiency
+4. Redundant operation removal
+5. Modern language features
+
+Always return complete, valid code. If no meaningful optimization is possible, return the original code unchanged.`;
 
 export function buildStructuredPrompt(
     code: string,
@@ -85,29 +217,27 @@ export function buildStructuredPrompt(
         all:              'improve overall quality',
     };
     const focusHint = focusMap[focus];
+    const lang = analysis.language || 'JavaScript';
 
-    // Keep system prompt SHORT — small models lose instruction-following with long prompts
-    const systemPrompt = `You are a code optimizer. Output ONLY the optimized code inside a fenced code block. Rules:
-- Keep ALL variables, functions, classes, and imports — never remove them
-- Output the COMPLETE code — never truncate, summarize, or use "..." placeholders
-- Make only minimal, safe changes to ${focusHint}
-- If no safe improvement exists, return the original code unchanged`;
+    // Fix 4: pick the example that matches the actual input language
+    const fewShotExample = getFewShotExample(lang);
+    const fenceTag = FENCE_TAG[lang] ?? lang.toLowerCase();
 
     // Few-shot example teaches the model the exact output format
-    const userPrompt = `${FEW_SHOT_EXAMPLE}
+    const userPrompt = `${fewShotExample}
 
 ### YOUR TASK
-Optimize this ${analysis.language || 'code'} (focus: ${focusHint}).
-Return the COMPLETE code in a fenced code block. Do not cut it off.
+Optimize this ${lang} (focus: ${focusHint}).
+Return COMPLETE code in a fenced code block. Do not cut it off.
 
 Input:
-\`\`\`${analysis.language || 'javascript'}
+\`\`\`${fenceTag}
 ${code}
 \`\`\`
 Output:`;
 
-    const fullPrompt = `${systemPrompt}\n\n${userPrompt}`;
-    return { fullPrompt, systemPrompt, userPrompt };
+    const fullPrompt = `${SYSTEM_PROMPT}\n\n${userPrompt}`;
+    return { fullPrompt, systemPrompt: SYSTEM_PROMPT, userPrompt };
 }
 
 export function buildPrompt(
@@ -138,23 +268,40 @@ function extractCriticalElements(code: string): {
     for (const line of code.split('\n')) {
         const trimmed = line.trim();
 
+        // JS/TS variable declarations
         const varMatch = trimmed.match(/(?:const|let|var)\s+([a-zA-Z_$][a-zA-Z0-9_$]*)/);
         if (varMatch) variables.add(varMatch[1]);
 
+        // Fix 6: multi-language function detection (single valid JS regex)
+        //   Group 1 — JS/TS:  function foo(
+        //   Group 2 — Python: def foo(
+        //   Group 3 — JS/TS:  foo = function | foo = (...) =>
+        //   Group 4 — Java/C++: [modifiers] returnType methodName(
         const funcMatch = trimmed.match(
-            /(?:function\s+([a-zA-Z_$][a-zA-Z0-9_$]*)|([a-zA-Z_$][a-zA-Z0-9_$]*)\s*=\s*(?:function|\([^)]*\)\s*=>))/,
+            /(?:function\s+([a-zA-Z_$][a-zA-Z0-9_$]*)|def\s+([a-zA-Z_][a-zA-Z0-9_]*)\s*\(|([a-zA-Z_$][a-zA-Z0-9_$]*)\s*=\s*(?:function|\([^)]*\)\s*=>)|(?:(?:public|private|protected|static|final|synchronized|override|inline|virtual|explicit)\s+)+[\w<>\[\]*&:]+\s+([a-zA-Z_][a-zA-Z0-9_]*)\s*\()/
         );
         if (funcMatch) {
-            const funcName = funcMatch[1] || funcMatch[2];
+            const funcName = funcMatch[1] || funcMatch[2] || funcMatch[3] || funcMatch[4];
             if (funcName) functions.add(funcName);
         }
 
+        // class detection: JS/TS/Java/C++/Python all use `class Name`
         const classMatch = trimmed.match(/class\s+([a-zA-Z_$][a-zA-Z0-9_$]*)/);
         if (classMatch) classes.add(classMatch[1]);
 
-        // More precise import extraction — captures the module path, not a keyword
+        // JS/TS ES-module imports
         const importMatch = trimmed.match(/import\s+.*?from\s+['"]([^'"]+)['"]/);
         if (importMatch) imports.add(importMatch[1]);
+
+        // Python imports: `import foo` / `from foo import bar`
+        const pyImportMatch = trimmed.match(/^(?:from\s+(\S+)\s+)?import\s+(\S+)/);
+        if (pyImportMatch) imports.add(pyImportMatch[1] ?? pyImportMatch[2]);
+
+        // Java/C++ includes: `import java.util.*` / `#include <vector>`
+        const javaImportMatch = trimmed.match(/^import\s+([\w.]+)/);
+        if (javaImportMatch) imports.add(javaImportMatch[1]);
+        const cppIncludeMatch = trimmed.match(/^#include\s*[<"]([^>"]+)[>"]/);
+        if (cppIncludeMatch) imports.add(cppIncludeMatch[1]);
     }
 
     return { variables, functions, classes, imports };
@@ -413,7 +560,14 @@ export function normalizeLLMOutput(
     const similarity = calculateCodeSimilarity(originalCode, extracted);
     const noChange   = normalizeCode(extracted) === normalizeCode(originalCode);
 
-    if (similarity < 50 && !noChange) {
+    // Fix 5: algorithm-aware similarity threshold.
+    // Sorting/searching algorithms get legitimately restructured (e.g. bubble→timsort),
+    // so a hard 50% floor wrongly rejects valid output. Lower it for detected algos.
+    const isSortOrSearch =
+        /sort|search|merge|partition|heap|bfs|dfs|binary/i.test(analysis.detected_algorithm ?? '');
+    const similarityThreshold = isSortOrSearch ? 25 : 35;
+
+    if (similarity < similarityThreshold && !noChange) {
         return makeFallback(originalCode, isC, enrichment, analysis,
             `Optimized code similarity too low (${similarity}%) — likely hallucination; original preserved.`);
     }
