@@ -1,70 +1,73 @@
 import { useEffect, useState } from 'react';
-
-export type PipelineStage = 'idle' | 'parsing' | 'analyzing' | 'optimizing' | 'rendering' | 'done';
+import { PIPELINE_STAGES, PIPELINE_STAGE_DESCRIPTION } from '../lib/constants';
 
 interface Props {
-    stage: PipelineStage;
-    isChunked?: boolean;
-    chunkIndex?: number;
-    totalChunks?: number;
+    current: string; // Current stage name
+    isLoading?: boolean;
 }
 
-const STAGES: Array<{ key: PipelineStage; label: string; icon: string }> = [
-    { key: 'parsing', label: 'Parsing', icon: '📄' },
-    { key: 'analyzing', label: 'Analyzing', icon: '🔍' },
-    { key: 'optimizing', label: 'Optimizing', icon: '⚙️' },
-    { key: 'rendering', label: 'Rendering', icon: '✨' },
-];
+const STAGE_ICONS: Record<string, string> = {
+    'Understanding Code': '📄',
+    'Optimizing': '⚙️',
+    'Refining Optimization': '✨',
+    'Finalizing Output': '📋',
+};
 
-const STAGE_ORDER: PipelineStage[] = ['idle', 'parsing', 'analyzing', 'optimizing', 'rendering', 'done'];
-
-export function PipelineIndicator({ stage, isChunked, chunkIndex = 0, totalChunks = 1 }: Props) {
+export function PipelineIndicator({ current, isLoading }: Props) {
     const [visible, setVisible] = useState(false);
 
     useEffect(() => {
-        if (stage !== 'idle' && stage !== 'done') {
+        if (current !== 'idle') {
             setVisible(true);
-        } else if (stage === 'done') {
+        } else {
             const t = setTimeout(() => setVisible(false), 800);
             return () => clearTimeout(t);
         }
-    }, [stage]);
+    }, [current]);
 
     if (!visible) return null;
 
-    const currentIdx = STAGE_ORDER.indexOf(stage);
-
     return (
-        <div className="pipeline-indicator">
+        <div 
+            className="pipeline-indicator"
+            role="status"
+            aria-live="polite"
+            aria-label={isLoading ? `Processing: ${current}` : 'Optimization complete'}
+        >
             <div className="pipeline-steps">
-                {STAGES.map((s, i) => {
-                    const stageIdx = STAGE_ORDER.indexOf(s.key);
-                    const isActive = s.key === stage;
-                    const isDone = stageIdx < currentIdx;
-                    const isPending = stageIdx > currentIdx;
+                {PIPELINE_STAGES.map((stage, i) => {
+                    const idx = PIPELINE_STAGES.indexOf(stage);
+                    const currentIdx = PIPELINE_STAGES.indexOf(current as any);
+                    const isActive = stage === current;
+                    const isDone = idx < currentIdx;
+                    const isPending = idx > currentIdx;
+                    const icon = STAGE_ICONS[stage] || '○';
 
                     return (
-                        <div key={s.key} className={`pipeline-step ${isActive ? 'active' : ''} ${isDone ? 'done' : ''} ${isPending ? 'pending' : ''}`}>
-                            <div className="step-icon">
-                                {isDone ? '✓' : s.icon}
+                        <div 
+                            key={stage} 
+                            className={`pipeline-step ${isActive ? 'active' : ''} ${isDone ? 'done' : ''} ${isPending ? 'pending' : ''}`}
+                            aria-current={isActive ? 'step' : undefined}
+                        >
+                            <div className="step-icon" aria-hidden="true">
+                                {isDone ? '✓' : isActive ? <span className="stage-pulse" /> : icon}
                             </div>
-                            <span className="step-label">{s.label}</span>
-                            {i < STAGES.length - 1 && (
-                                <div className={`step-connector ${isDone ? 'done' : ''}`} />
+                            <span className="step-label">
+                                {stage}
+                            </span>
+                            <span className="sr-only">
+                                {isDone && 'completed'}
+                                {isActive && 'in progress'}
+                                {isPending && 'pending'}
+                            </span>
+                            <span className="sr-only">{PIPELINE_STAGE_DESCRIPTION[stage]}</span>
+                            {i < PIPELINE_STAGES.length - 1 && (
+                                <div className={`step-connector ${isDone ? 'done' : ''}`} aria-hidden="true" />
                             )}
                         </div>
                     );
                 })}
             </div>
-
-            {isChunked && totalChunks > 1 && (
-                <div className="pipeline-chunk-info">
-                    Processing chunk {chunkIndex + 1} of {totalChunks}
-                    <div className="chunk-bar">
-                        <div className="chunk-fill" style={{ width: `${((chunkIndex + 1) / totalChunks) * 100}%` }} />
-                    </div>
-                </div>
-            )}
         </div>
     );
 }

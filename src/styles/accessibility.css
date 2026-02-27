@@ -1,0 +1,355 @@
+/**
+ * Accessibility stylesheet for OPTIMA.
+ * Includes focus management, keyboard navigation, and screen reader support.
+ */
+
+/* ─────────────────────────────────────────────────────────────────────────────
+   Screen Reader Support
+   ───────────────────────────────────────────────────────────────────────────── */
+
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border-width: 0;
+}
+
+.sr-only-focusable:active,
+.sr-only-focusable:focus {
+  position: static;
+  width: auto;
+  height: auto;
+  overflow: visible;
+  clip: auto;
+  white-space: normal;
+}
+
+/* ─────────────────────────────────────────────────────────────────────────────
+   Focus Management
+   ───────────────────────────────────────────────────────────────────────────── */
+
+/* Visible focus indicators for keyboard navigation */
+:focus {
+  outline: 2px solid var(--primary);
+  outline-offset: 2px;
+}
+
+:focus:not(:focus-visible) {
+  outline: none;
+}
+
+:focus-visible {
+  outline: 2px solid var(--primary);
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+
+button:focus-visible,
+a:focus-visible,
+input:focus-visible,
+select:focus-visible,
+textarea:focus-visible {
+  outline: 2px solid var(--primary);
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+
+/* Ensure button styles remain visible on focus */
+button {
+  position: relative;
+}
+
+button:focus-visible::after {
+  content: '';
+  position: absolute;
+  top: -4px;
+  left: -4px;
+  right: -4px;
+  bottom: -4px;
+  border: 2px solid var(--primary);
+  border-radius: 6px;
+  pointer-events: none;
+}
+
+/* ─────────────────────────────────────────────────────────────────────────────
+   Keyboard Navigation & Tab Order
+   ───────────────────────────────────────────────────────────────────────────── */
+
+/* Tab navigation highlights */
+[role="tab"] {
+  cursor: pointer;
+  position: relative;
+}
+
+[role="tablist"] {
+  display: flex;
+  border-bottom: 1px solid var(--border);
+  gap: 0;
+}
+
+[role="tab"]:focus-visible {
+  z-index: 1;
+  outline: 2px solid var(--primary);
+  outline-offset: -2px;
+}
+
+/* Ensure disabled buttons don't receive focus */
+button:disabled {
+  cursor: not-allowed;
+  opacity: 0.6;
+}
+
+button:disabled:focus {
+  outline: none;
+}
+
+/* ─────────────────────────────────────────────────────────────────────────────
+   Color-Independent Status Indicators
+   ───────────────────────────────────────────────────────────────────────────── */
+
+/* Complexity badges - use both color AND icon/text */
+.complexity-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 8px;
+  border-radius: 4px;
+  font-weight: 600;
+  font-size: 12px;
+}
+
+.complexity-green {
+  background-color: rgba(16, 185, 129, 0.1);
+  color: #10b981;
+  border: 1px solid rgba(16, 185, 129, 0.3);
+}
+
+.complexity-blue {
+  background-color: rgba(59, 130, 246, 0.1);
+  color: #3b82f6;
+  border: 1px solid rgba(59, 130, 246, 0.3);
+}
+
+.complexity-red {
+  background-color: rgba(239, 68, 68, 0.1);
+  color: #ef4444;
+  border: 1px solid rgba(239, 68, 68, 0.3);
+}
+
+.complexity-gray {
+  background-color: rgba(107, 114, 128, 0.1);
+  color: #6b7280;
+  border: 1px solid rgba(107, 114, 128, 0.3);
+}
+
+/* Status indicators - visible to all users */
+.status-icon {
+  display: inline-block;
+  margin-right: 4px;
+  font-size: 1em;
+  vertical-align: -2px;
+}
+
+.model-indicator {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  position: relative;
+}
+
+.model-indicator.ready {
+  background: rgba(16, 185, 129, 0.1);
+  border: 2px solid #10b981;
+}
+
+.model-indicator.error {
+  background: rgba(239, 68, 68, 0.1);
+  border: 2px solid #ef4444;
+}
+
+.model-indicator.initializing,
+.model-indicator.loading_model {
+  background: rgba(59, 130, 246, 0.1);
+  border: 2px solid #3b82f6;
+}
+
+.model-indicator.idle {
+  background: rgba(107, 114, 128, 0.1);
+  border: 2px solid #6b7280;
+}
+
+/* ─────────────────────────────────────────────────────────────────────────────
+   Error & Alert Messages
+   ───────────────────────────────────────────────────────────────────────────── */
+
+.error-message {
+  padding: 12px 16px;
+  margin-top: 12px;
+  background-color: rgba(239, 68, 68, 0.1);
+  border-left: 4px solid #ef4444;
+  color: #991b1b;
+  border-radius: 4px;
+  font-size: 14px;
+  line-height: 1.5;
+}
+
+[role=\"alert\"] {
+  padding: 12px 16px;
+  background-color: rgba(239, 68, 68, 0.1);
+  border-left: 4px solid #ef4444;
+  border-radius: 4px;
+}
+
+[role=\"status\"] {
+  position: relative;
+}
+
+[aria-live=\"polite\"],
+[aria-live=\"assertive\"] {
+  position: relative;
+}
+
+/* ─────────────────────────────────────────────────────────────────────────────
+   Modal & Dialog Focus Management (if applicable)
+   ───────────────────────────────────────────────────────────────────────────── */
+
+[role=\"dialog\"] {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 1000;
+  padding: 20px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+[role=\"dialog\"] button:focus-visible,
+[role=\"dialog\"] input:focus-visible,
+[role=\"dialog\"] select:focus-visible {
+  outline: 2px solid var(--primary);
+  outline-offset: 2px;
+}
+
+/* ─────────────────────────────────────────────────────────────────────────────
+   Label Focus
+   ───────────────────────────────────────────────────────────────────────────── */
+
+label {
+  display: block;
+  margin-bottom: 4px;
+  font-weight: 600;
+  font-size: 12px;
+  color: var(--text-light);
+  cursor: pointer;
+}
+
+input[type=\"checkbox\"] + label,
+input[type=\"radio\"] + label {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 0;
+  cursor: pointer;
+}
+
+input[type=\"checkbox\"]:focus-visible + label,
+input[type=\"radio\"]:focus-visible + label {
+  outline: 2px solid var(--primary);
+  outline-offset: 2px;
+  border-radius: 4px;
+  padding: 4px;
+}
+
+/* ─────────────────────────────────────────────────────────────────────────────
+   Reduced Motion Support (respects user preferences)
+   ───────────────────────────────────────────────────────────────────────────── */
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+
+  .pulse-dot,
+  .ring-spin,
+  .stage-pulse {
+    animation: none !important;
+  }
+}
+
+/* ─────────────────────────────────────────────────────────────────────────────
+   Contrast & Readability
+   ───────────────────────────────────────────────────────────────────────────── */
+
+/* Ensure minimum contrast ratios */
+.status-label {
+  color: var(--text);
+  font-size: 14px;
+  line-height: 1.5;
+}
+
+.status-label.ready {
+  color: #10b981;
+  font-weight: 600;
+}
+
+.status-label.error {
+  color: #991b1b;
+  font-weight: 600;
+}
+
+/* Code display - ensure readability */
+.code-display {
+  background: var(--bg-secondary);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 12px;
+  overflow-x: auto;
+  font-family: 'Monaco', 'Menlo', 'Ubuntu Mono', monospace;
+  font-size: 13px;
+  line-height: 1.6;
+  color: var(--text);
+}
+
+/* ─────────────────────────────────────────────────────────────────────────────
+   Skip Links (hidden but keyboard accessible)
+   ───────────────────────────────────────────────────────────────────────────── */
+
+.skip-link {
+  position: absolute;
+  top: -40px;
+  left: 0;
+  background: var(--primary);
+  color: white;
+  padding: 8px 16px;
+  text-decoration: none;
+  border-radius: 0 0 4px 0;
+  z-index: 100;
+}
+
+.skip-link:focus {
+  top: 0;
+}
+
+/* ─────────────────────────────────────────────────────────────────────────────
+   Hidden Input Reset
+   ───────────────────────────────────────────────────────────────────────────── */
+
+.hidden-file-input {
+  display: none;
+}

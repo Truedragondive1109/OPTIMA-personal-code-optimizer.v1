@@ -1,5 +1,5 @@
 import { analyzeCode } from '../lib/staticAnalyzer';
-import { buildPrompt, buildPromptFast, normalizeLLMOutput } from '../lib/promptBuilder';
+import { buildPrompt, buildPromptFast, normalizeLLMOutput, normalizeLLMOutputFast } from '../lib/promptBuilder';
 import { TextGeneration } from '@runanywhere/web-llamacpp';
 import type { OptimizationFocus } from '../lib/promptBuilder';
 
@@ -479,7 +479,9 @@ self.onmessage = async (e: MessageEvent<any>) => {
                 self.postMessage({ type: 'stream_idle' });
 
                 self.postMessage({ type: 'stage', value: 'Finalizing Output' });
-                const parsed = normalizeLLMOutput(modelOutput, code, analysis, language);
+                const parsed = fastMode
+                    ? normalizeLLMOutputFast(modelOutput, code, analysis, language)
+                    : normalizeLLMOutput(modelOutput, code, analysis, language);
 
                 // Always send 'done' — never throw on a fallback result.
                 // parsed._no_change + parsed._parse_warning tells the UI it

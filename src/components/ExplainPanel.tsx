@@ -8,9 +8,41 @@ interface Props {
 }
 
 function ComplexityBadge({ label, color }: { label: string; color: 'red' | 'green' | 'blue' | 'gray' }) {
-    return <span className={`complexity-badge complexity-${color}`}>{label}</span>;
+    // Add non-color icons for colorblind accessibility
+    const getIcon = (c: string) => {
+        switch (c) {
+            case 'green': return '✅'; // Excellent
+            case 'blue': return '👍'; // Good
+            case 'red': return '⚠️'; // Warning
+            default: return 'ℹ️'; // Info
+        }
+    };
+    
+    const getAriaLabel = (c: string) => {
+        switch (c) {
+            case 'green': return 'Excellent complexity';
+            case 'blue': return 'Good complexity';
+            case 'red': return 'Poor complexity - optimization recommended';
+            default: return 'Unspecified complexity';
+        }
+    };
+    
+    return (
+        <span 
+            className={`complexity-badge complexity-${color}`}
+            aria-label={getAriaLabel(color)}
+            title={getAriaLabel(color)}
+        >
+            {getIcon(color)} {label}
+        </span>
+    );
 }
 
+/**
+ * Determine complexity color for UI display.
+ * Also consider accessibility: colors alone are insufficient for colorblind users.
+ * Pair with icons and text labels in ComplexityBadge component.
+ */
 function getComplexityColor(complexity: string | undefined): 'red' | 'green' | 'blue' | 'gray' {
     if (!complexity) return 'gray';
     if (/O\(1\)|O\(log n\)/i.test(complexity)) return 'green';
@@ -137,7 +169,7 @@ function ComplexityPanel({ result, isNoChange }: { result: OptimizationResult; i
                 borderBottom: '1px solid var(--border)',
                 display: 'flex', alignItems: 'center', gap: '8px',
             }}>
-                <span>📊</span>
+                <span aria-hidden="true">📊</span>
                 <span style={{ fontWeight: 700, fontSize: '12px', color: 'var(--text)' }}>Complexity Analysis</span>
             </div>
 
@@ -146,8 +178,10 @@ function ComplexityPanel({ result, isNoChange }: { result: OptimizationResult; i
                 {/* Time complexity row */}
                 <div>
                     <div style={{ fontSize: '10px', fontWeight: 700, textTransform: 'uppercase',
-                        letterSpacing: '0.07em', color: 'var(--text-light)', marginBottom: '8px' }}>
-                        ⏱ Time Complexity
+                        letterSpacing: '0.07em', color: 'var(--text-light)', marginBottom: '8px' }}
+                        id="complexity-time"
+                    >
+                        <span aria-hidden="true">⏱</span> Time Complexity
                     </div>
                     <div style={{ display: 'flex', alignItems: 'center', gap: '10px', flexWrap: 'wrap' }}>
                         <div style={{ display: 'flex', flexDirection: 'column', gap: '2px' }}>
@@ -176,8 +210,10 @@ function ComplexityPanel({ result, isNoChange }: { result: OptimizationResult; i
                 {/* Space complexity row */}
                 <div>
                     <div style={{ fontSize: '10px', fontWeight: 700, textTransform: 'uppercase',
-                        letterSpacing: '0.07em', color: 'var(--text-light)', marginBottom: '8px' }}>
-                        🗄 Space Complexity
+                        letterSpacing: '0.07em', color: 'var(--text-light)', marginBottom: '8px' }}
+                        id="complexity-space"
+                    >
+                        <span aria-hidden="true">🗄</span> Space Complexity
                     </div>
                     <ComplexityBadge label={space} color={spaceColor} />
                     <div style={{ marginTop: '6px', fontSize: '12px', color: 'var(--text-secondary)', lineHeight: '1.5' }}>
@@ -490,6 +526,12 @@ export function ExplainPanel({ result, isLoading, shouldShowImprovement = true }
                             ? "The model couldn't produce a reliable change, so your original was kept. Here's what you could try manually:"
                             : "No automatic improvements were found. Here's what you could explore to take this further:"}
                     </p>
+                    {result._parse_warning && (
+                        <div className="explain-notice explain-notice--warn" style={{ marginTop: '8px', textAlign: 'left' }}>
+                            <span>⚠️</span>
+                            <span>{result._parse_warning}</span>
+                        </div>
+                    )}
                     {result._c_language && (
                         <div className="explain-notice explain-notice--info" style={{ marginTop: '4px' }}>
                             <span>🛡️</span>

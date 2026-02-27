@@ -1,13 +1,15 @@
 # OPTIMA — On-Device Code Intelligence Engine
 
-OPTIMA is a sophisticated on-device code optimizer built with React + TypeScript + RunAnywhere SDK (Qwen2.5-0.5B GGUF via LlamaCPP). All inference runs locally in your browser with no data leaving your device.
+OPTIMA is a sophisticated on-device code optimizer built with React + TypeScript + RunAnywhere SDK (Qwen2.5 GGUF models via LlamaCPP). All inference runs locally in your browser with no data leaving your device.
 
 ## 🚀 Features
 
 - **Smart Code Analysis**: Detects algorithms, patterns, and inefficiencies
-- **AI-Powered Optimization**: Uses Qwen2.5 0.5B model for intelligent code improvements
+- **AI-Powered Optimization**: Uses Qwen2.5 models (0.5B/1.5B/3B) for intelligent code improvements
 - **Multi-Language Support**: JavaScript, TypeScript, Python, Java, C++
 - **Real-time Streaming**: Watch the AI optimize your code live
+- **Fast Mode**: Toggle for ultra-fast optimization with shorter prompts and reduced retries
+- **Model Selection**: Choose from 0.5B, 1.5B, or 3B models at startup
 - **Comprehensive Analysis**: Overview panel with complexity analysis and insights
 - **Diff Visualization**: See exactly what changed between original and optimized code
 - **Detailed Explanations**: Understand why changes were made
@@ -52,24 +54,25 @@ OPTIMA uses a client-only edge AI architecture with dedicated worker threads:
 ## 🛠️ Technical Specifications
 
 ### Model Configuration
-- **Model**: Qwen2.5-0.5B-Instruct-Q4_0 (500M parameters)
+- **Models**: Qwen2.5-0.5B/1.5B/3B-Instruct-Q4_0 (user-selectable)
 - **Framework**: LlamaCPP WebAssembly
-- **Memory**: 350MB requirement
+- **Memory**: 350MB (0.5B), 900MB (1.5B), 1.8GB (3B)
 - **Temperature**: 0.05 (consistent, focused output)
 - **Timeout**: 90 seconds (CPU inference)
-- **Token Limits**: Adaptive (300-1200 based on code size)
+- **Token Limits**: Adaptive (300-1200 normal, 150-600 fast mode)
 
 ### Performance Optimizations
 - **Adaptive Token Limits**: Scales with code complexity
 - **Progressive Chunking**: Intelligent code splitting for large inputs
 - **Streaming Interface**: Real-time output during processing
 - **Memory Management**: Efficient resource cleanup and cancellation
+- **Fast Mode**: Shorter prompts, fewer retries, smaller token budgets for speed
 
 ## 🚀 Getting Started
 
 ### Prerequisites
 - Modern browser with WebAssembly support (Chrome 96+, Edge 96+)
-- 250MB available memory for model download
+- 350MB-1.8GB available memory (depends on selected model)
 - HTTPS or localhost for SharedArrayBuffer support
 
 ### Installation & Development
@@ -86,9 +89,10 @@ npm run build
 
 ### Quick Start
 1. Open `http://localhost:5173` in your browser
-2. Wait for model initialization (first-time download ~250MB)
+2. Choose a model (0.5B/1.5B/3B) and wait for download
 3. Paste your code and click "Optimize Code"
-4. View results in Overview, Code, Diff, and Explain tabs
+4. Toggle **Fast** for quicker results (shorter prompts, fewer retries)
+5. View results in Overview, Code, Diff, and Explain tabs
 
 ## 📁 Project Structure
 
@@ -172,10 +176,10 @@ OPTIMA/
 ## 📈 Performance
 
 ### Benchmarks
-- **Small Functions** (< 15 lines): ~2-5 seconds
-- **Medium Algorithms** (15-40 lines): ~5-15 seconds  
-- **Large Codebases** (40+ lines): ~10-30 seconds
-- **Memory Usage**: ~250-350MB during inference
+- **Small Functions** (< 15 lines): ~2-5 seconds (normal), ~1-3 seconds (fast)
+- **Medium Algorithms** (15-40 lines): ~5-15 seconds (normal), ~3-8 seconds (fast)
+- **Large Codebases** (40+ lines): ~10-30 seconds (normal), ~6-18 seconds (fast)
+- **Memory Usage**: ~350MB (0.5B), ~900MB (1.5B), ~1.8GB (3B) during inference
 
 ### Optimization Impact
 - **Algorithmic**: O(n²) → O(n) improvements when possible
@@ -202,3 +206,12 @@ MIT License - See LICENSE file for details
 ---
 
 **Built with ❤️ using RunAnywhere SDK - On-device AI that respects your privacy.**
+
+## 🆕 Recent Updates
+
+### v1.2.0 — Fast Mode & Model Selection
+- ✨ **Fast Mode Toggle**: Ultra-fast optimization with shorter prompts and reduced retries
+- 🎛️ **Model Selection**: Choose between 0.5B, 1.5B, and 3B Qwen models at startup
+- 📊 **Dynamic Download Progress**: Real-time MB/GB display during model download
+- 🎨 **UI Improvements**: Centered model picker, better loading states
+- ⚡ **Performance**: Faster time-to-first-token, especially in Fast mode

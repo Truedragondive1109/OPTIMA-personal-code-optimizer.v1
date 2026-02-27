@@ -267,7 +267,8 @@ export function buildPromptFast(
 
     // Very short system + no few-shot
     const userPrompt = `Optimize this ${language} (${hint}).
-Return ONLY the complete optimized code in a fenced code block. Do not explain.
+Fix any syntax errors and type errors. Ensure the result compiles/runs.
+Return ONLY the complete code in a fenced code block. Do not explain.
 
 \`\`\`${fenceTag}
 ${code}
@@ -360,28 +361,39 @@ function validateElementPreservation(
 // ---------------------------------------------------------------------------
 
 function calculateCodeSimilarity(original: string, optimized: string): number {
-    const origLines = original.trim().split('\n').filter(l => l.trim());
-    const optLines  = optimized.trim().split('\n').filter(l => l.trim());
+    // Use a hybrid similarity: Jaccard set overlap of normalized lines combined
+    // with a simple longest-common-subsequence (LCS) line ratio. This is
+    // more robust to reordering, comment insertion, and minor formatting
+    // differences commonly produced by mid-sized models.
+    const normalizeLine = (s: string) => s.replace(/[^a-zA-Z0-9_\s]/g, '').replace(/\s+/g, ' ').trim().toLowerCase();
+
+    const origLines = original.trim().split('\n').map(normalizeLine).filter(l => l);
+    const optLines = optimized.trim().split('\n').map(normalizeLine).filter(l => l);
 
     if (origLines.length === 0 || optLines.length === 0) return 0;
 
-    let matchingLines = 0;
-    const minLength = Math.min(origLines.length, optLines.length);
+    // Jaccard similarity of unique meaningful lines
+    const origSet = new Set(origLines);
+    const optSet = new Set(optLines);
+    let intersection = 0;
+    for (const l of origSet) if (optSet.has(l)) intersection++;
+    const union = new Set([...origSet, ...optSet]).size;
+    const jaccard = union === 0 ? 0 : intersection / union;
 
-    for (let i = 0; i < minLength; i++) {
-        const o = origLines[i].trim();
-        const p = optLines[i].trim();
-        if (
-            o === p ||
-            (o.length > 10 && p.length > 10 &&
-                (o.includes(p.substring(0, 10)) || p.includes(o.substring(0, 10))))
-        ) {
-            matchingLines++;
+    // LCS (line-based) simple dynamic programming for longest common subsequence
+    const m = origLines.length, n = optLines.length;
+    const dp: number[][] = Array.from({ length: m + 1 }, () => new Array(n + 1).fill(0));
+    for (let i = 1; i <= m; i++) {
+        for (let j = 1; j <= n; j++) {
+            if (origLines[i - 1] === optLines[j - 1]) dp[i][j] = dp[i - 1][j - 1] + 1;
+            else dp[i][j] = Math.max(dp[i - 1][j], dp[i][j - 1]);
         }
     }
+    const lcsRatio = dp[m][n] / Math.max(m, n);
 
-    const lengthRatio = minLength / Math.max(origLines.length, optLines.length);
-    return Math.round((matchingLines / Math.max(origLines.length, optLines.length)) * lengthRatio * 100);
+    // Combine metrics: weighted average (favoring LCS for order preservation)
+    const score = Math.round((0.6 * lcsRatio + 0.4 * jaccard) * 100);
+    return score;
 }
 
 // ---------------------------------------------------------------------------
@@ -573,7 +585,6 @@ export function normalizeLLMOutput(
 
     const meaningfulMissingVars = ev.missingVariables.filter(v => !isTrivialVar(v));
     const missingParts = [
-        meaningfulMissingVars.length    > 0 ? `${meaningfulMissingVars.length} variable(s): ${meaningfulMissingVars.join(', ')}` : null,
         ev.missingFunctions.length      > 0 ? `${ev.missingFunctions.length} function(s): ${ev.missingFunctions.join(', ')}` : null,
         ev.missingClasses.length        > 0 ? `${ev.missingClasses.length} class(es): ${ev.missingClasses.join(', ')}` : null,
         ev.missingImports.length        > 0 ? `${ev.missingImports.length} import(s): ${ev.missingImports.join(', ')}` : null,
@@ -582,6 +593,11 @@ export function normalizeLLMOutput(
     if (missingParts.length > 0) {
         return makeFallback(originalCode, isC, enrichment, analysis,
             `Model dropped critical elements (${missingParts.join('; ')}); original code preserved to prevent data loss.`);
+    }
+
+    // If only variables are missing, accept output but warn (models often inline/rename locals).
+    if (meaningfulMissingVars.length > 0) {
+        parseWarning = `Model renamed/removed some variables (${meaningfulMissingVars.slice(0, 12).join(', ')}). Accepted with caution.`;
     }
 
     // ── Step 5: similarity check ─────────────────────────────────────────────
@@ -596,8 +612,19 @@ export function normalizeLLMOutput(
     const similarityThreshold = isSortOrSearch ? 25 : 35;
 
     if (similarity < similarityThreshold && !noChange) {
-        return makeFallback(originalCode, isC, enrichment, analysis,
-            `Optimized code similarity too low (${similarity}%) — likely hallucination; original preserved.`);
+        // If similarity is low we normally reject because the model likely
+        // hallucinated or produced unrelated output. However, some valid
+        // optimizations (re-architecting an algorithm) can show low similarity
+        // but still be meaningful. Accept such outputs cautiously if they
+        // contain a minimum amount of meaningful lines; otherwise fallback.
+        const minMeaningful = Math.max(1, Math.floor(origMeaningful * 0.2));
+        if (optMeaningful >= minMeaningful) {
+            parseWarning = `Optimized output has low similarity (${similarity}%). Accepted with caution.`;
+            // continue but lower downstream confidence (handled later)
+        } else {
+            return makeFallback(originalCode, isC, enrichment, analysis,
+                `Optimized code similarity too low (${similarity}%) — likely hallucination; original preserved.`);
+        }
     }
 
     // ── Step 6: build successful result ──────────────────────────────────────
@@ -635,6 +662,70 @@ export function normalizeLLMOutput(
         _no_change:              noChange,
         _c_language:             enrichment._c_language,
         ...(parseWarning ? { _parse_warning: parseWarning } : {}),
+    };
+}
+
+// ---------------------------------------------------------------------------
+// Fast-mode normalizer — permissive extraction for speed and resilience.
+//
+// In fast mode we prefer returning something usable (especially syntax fixes)
+// rather than falling back to original due to strict validation.
+// ---------------------------------------------------------------------------
+
+export function normalizeLLMOutputFast(
+    rawText: string,
+    originalCode: string,
+    analysis: StaticAnalysis,
+    language?: string,
+): OptimizationResult {
+    const lang = language || analysis.language;
+    const isC  = lang === 'C';
+
+    const enrichment = {
+        detected_patterns:       analysis.detected_patterns,
+        possible_optimizations:  analysis.possible_optimizations,
+        static_confidence_score: analysis.confidence_score,
+        _c_language: isC || undefined,
+    };
+
+    let extracted = extractCode(rawText);
+    if (!extracted) {
+        return makeFallback(originalCode, isC, enrichment, analysis,
+            'Could not extract any code from model output.');
+    }
+
+    let parseWarning: string | undefined;
+    if (isCodeTruncated(extracted) || repairTruncatedCode(extracted).wasRepaired) {
+        const { repaired, wasRepaired } = repairTruncatedCode(extracted);
+        if (wasRepaired) {
+            extracted = repaired;
+            parseWarning = 'Fast mode: model output was truncated; missing closing brackets were appended automatically.';
+        }
+    }
+
+    const noChange = normalizeCode(extracted) === normalizeCode(originalCode);
+
+    return {
+        algorithm:               analysis.detected_algorithm || 'Custom Logic',
+        complexity_before:       analysis.estimated_complexity || 'Unknown',
+        complexity_after:        analysis.estimated_complexity || 'Unknown',
+        bottleneck:              analysis.detected_patterns[0]?.description || 'None detected',
+        strategy:                noChange ? 'No change needed' : 'Fast mode optimization (light validation)',
+        optimization_strategy:   noChange ? 'No change needed' : 'Fast mode optimization (light validation)',
+        tradeoffs:               'None',
+        estimated_improvement:   noChange ? 'No measurable improvement' : 'Fast mode optimization applied',
+        confidence:              noChange ? 100 : 45,
+        explanation:             noChange
+                                    ? 'Code is already well-optimized. No meaningful changes found.'
+                                    : 'Fast mode returned a quick optimization/fix with reduced validation.',
+        optimized_code:          extracted,
+        detected_patterns:       enrichment.detected_patterns,
+        possible_optimizations:  enrichment.possible_optimizations,
+        static_confidence_score: enrichment.static_confidence_score,
+        _parsed:                 true,
+        _no_change:              noChange,
+        _c_language:             isC || undefined,
+        _parse_warning:          parseWarning,
     };
 }
 
