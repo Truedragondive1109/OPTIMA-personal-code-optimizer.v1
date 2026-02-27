@@ -76,6 +76,31 @@ function formatModelLoadError(err: any, modelId: string): string {
     return `Failed to load model (${modelId}). ${raw}`;
 }
 
+function formatModelLoadFailedNoError(modelId: string, status: string | undefined): string {
+    const st = String(status || '').toLowerCase();
+    const statusLabel = status ? `status=${status}` : 'status=unknown';
+
+    // When ok=false and no exception is thrown, it's typically resource / environment related.
+    const common = [
+        `Failed to load model (${modelId}). ModelManager.loadModel returned ok=false (${statusLabel}).`,
+        'Common causes:',
+        '- Insufficient RAM / WASM memory (most common for 3B)',
+        '- Browser storage/OPFS quota issues (corrupt/incomplete cache)',
+        '- Browser environment limitations (SharedArrayBuffer / cross-origin isolation)',
+        'Try:',
+        '- Close other tabs/apps and refresh',
+        '- Click "Clear Cache & Retry" in the UI',
+        '- Load the 1.5B model (recommended) or 0.5B model',
+    ];
+
+    // Add a small hint when status suggests the model is "downloaded" but not loadable.
+    if (st.includes('download')) {
+        common.splice(1, 0, 'Note: model appears downloaded but failed to load into memory.');
+    }
+
+    return common.join('\n');
+}
+
 async function workerInitSDK(requestedModelId: string | null) {
     const {
         RunAnywhere,
@@ -284,7 +309,10 @@ async function workerInitSDK(requestedModelId: string | null) {
 
         try {
             const ok = await ModelManager.loadModel(model.id, { coexist: false });
-            if (!ok) throw new Error('Model loading failed');
+            if (!ok) {
+                const status = ModelManager.getModels().find((x: any) => x.id === model.id)?.status;
+                throw new Error(formatModelLoadFailedNoError(model.id, status));
+            }
         } catch (err: any) {
             throw new Error(formatModelLoadError(err, model.id));
         }

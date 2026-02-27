@@ -117,7 +117,9 @@ export function App() {
     <div className="app">
       <header className="app-header">
         <div className="app-title">
-          <img src="/optima.png" alt="OPTIMA" className="logo-mark" />
+          <div className="logo-mark" aria-hidden>
+            <img src={`${import.meta.env.BASE_URL}optima.png`} alt="" className="logo-mark-img" />
+          </div>
           <div className="title-text">
             <h1>OPTIMA</h1>
             <span className="app-subtitle">On-Device Code Intelligence Engine</span>
