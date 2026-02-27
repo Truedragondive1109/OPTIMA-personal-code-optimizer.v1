@@ -34,6 +34,48 @@ class InferenceTimeoutError extends Error {
     }
 }
 
+function formatModelLoadError(err: any, modelId: string): string {
+    const raw = String(err?.message || err || 'Unknown error');
+    const msg = raw.toLowerCase();
+
+    // Memory issues are the #1 cause for 3B failing to load.
+    if (
+        /out of memory|oom|memory|cannot allocate|allocation failed|wasm.*memory|rangeerror|abort\(out of memory\)/i.test(raw) ||
+        /insufficient\s*memory/i.test(raw)
+    ) {
+        return [
+            `Failed to load model (${modelId}): insufficient memory.`,
+            'Try:',
+            '- Close other tabs/apps to free RAM',
+            '- Refresh the page and try again',
+            '- Use the 1.5B model (recommended) or 0.5B model',
+        ].join('\n');
+    }
+
+    // OPFS / storage quota problems.
+    if (/quota|opfs|storage|not enough space|insufficient storage|disk/i.test(msg)) {
+        return [
+            `Failed to load model (${modelId}): browser storage quota issue.`,
+            'Try:',
+            '- Click "Clear Cache & Retry" in the UI',
+            '- Clear site data for localhost in browser settings',
+            '- Ensure you have sufficient free disk space',
+        ].join('\n');
+    }
+
+    // SharedArrayBuffer / cross-origin isolation issues (sometimes surfaced indirectly).
+    if (/sharedarraybuffer|cross-origin|coop|coep|not isolated|cross origin/i.test(msg)) {
+        return [
+            `Failed to load model (${modelId}): browser security requirements not met (SharedArrayBuffer).`,
+            'Try:',
+            '- Run on https or localhost',
+            '- Ensure the page is cross-origin isolated (COOP/COEP)',
+        ].join('\n');
+    }
+
+    return `Failed to load model (${modelId}). ${raw}`;
+}
+
 async function workerInitSDK(requestedModelId: string | null) {
     const {
         RunAnywhere,
@@ -240,8 +282,12 @@ async function workerInitSDK(requestedModelId: string | null) {
             await new Promise((resolve) => setTimeout(resolve, 250));
         }
 
-        const ok = await ModelManager.loadModel(model.id, { coexist: false });
-        if (!ok) throw new Error('Model loading failed');
+        try {
+            const ok = await ModelManager.loadModel(model.id, { coexist: false });
+            if (!ok) throw new Error('Model loading failed');
+        } catch (err: any) {
+            throw new Error(formatModelLoadError(err, model.id));
+        }
     }
 }
 
