@@ -1,217 +1,225 @@
-# OPTIMA — On-Device Code Intelligence Engine
+# OPTIMA - On-Device Code Intelligence Engine
 
-OPTIMA is a sophisticated on-device code optimizer built with React + TypeScript + RunAnywhere SDK (Qwen2.5 GGUF models via LlamaCPP). All inference runs locally in your browser with no data leaving your device.
+OPTIMA is a browser-first code optimization app built with React + TypeScript + Vite + RunAnywhere.
 
-## 🚀 Features
+Inference runs locally on your device through a Web Worker and LlamaCPP-backed models. The app is designed to keep source code private while still providing practical optimization suggestions, code rewrites, and explainable results.
 
-- **Smart Code Analysis**: Detects algorithms, patterns, and inefficiencies
-- **AI-Powered Optimization**: Uses Qwen2.5 models (0.5B/1.5B/3B) for intelligent code improvements
-- **Multi-Language Support**: JavaScript, TypeScript, Python, Java, C++
-- **Real-time Streaming**: Watch the AI optimize your code live
-- **Fast Mode**: Toggle for ultra-fast optimization with shorter prompts and reduced retries
-- **Model Selection**: Choose from 0.5B, 1.5B, or 3B models at startup
-- **Comprehensive Analysis**: Overview panel with complexity analysis and insights
-- **Diff Visualization**: See exactly what changed between original and optimized code
-- **Detailed Explanations**: Understand why changes were made
-- **100% Private**: No code or data ever leaves your device
+## Highlights
 
-## 🏗️ Architecture
+- On-device AI optimization workflow (no server inference path in this repo)
+- Model selection at startup (Qwen2.5 0.5B, 1.5B, 3B GGUF variants)
+- Multi-language optimization support:
+  - JavaScript
+  - TypeScript
+  - Python
+  - Java
+  - C++
+- Streaming generation preview with live status states
+- Multiple output views:
+  - Overview
+  - Optimized code
+  - Diff
+  - Explanation
+- Fast mode for lower latency
+- Run history persistence in localStorage
+- Graceful cancellation and timeout protection
 
-OPTIMA uses a client-only edge AI architecture with dedicated worker threads:
+## Core Features
 
-### Runtime Split
-- **Main Thread**: React rendering, UI interactions, status display
-- **Worker Thread**: Heavy optimization logic, LLM inference, static analysis
+### 1. Optimization Pipeline
 
-### Core Components
-- **`CodeOptimizerTab.tsx`**: Main UI with input/output panels, loading stages
-- **`optimizer_worker.ts`**: End-to-end optimization pipeline with smart retry logic
-- **`OverviewPanel.tsx`**: Comprehensive analysis display with complexity metrics
-- **`ExplainPanel.tsx`**: Detailed optimization explanations
-- **`DiffViewer.tsx`**: Side-by-side code comparison
+- Static analysis of input code
+- Prompt construction based on language, focus, and mode
+- LLM inference in a dedicated worker thread
+- Output normalization and safety fallbacks
 
-### Intelligence Pipeline
-1. **Static Analysis**: Pattern detection, complexity analysis, bottleneck identification
-2. **Smart Prompting**: Adaptive prompts based on code size and complexity
-3. **LLM Inference**: Qwen2.5 model with optimized parameters
-4. **Output Normalization**: Robust parsing with fallback mechanisms
+### 2. Smart UI States
 
-## 🎯 Optimization Capabilities
+- Idle / initializing / loading / ready / error model states
+- Progress and byte-level download feedback
+- Stage-based optimization display (`Understanding Code`, `Optimizing`, `Refining Optimization`, `Finalizing Output`)
 
-### Smart Features
-- **Algorithm Detection**: Identifies sorting, searching, and other common patterns
-- **Complexity Analysis**: Big O notation before/after optimization
-- **Bottleneck Detection**: Finds performance bottlenecks automatically
-- **Language-Specific Optimizations**: Tailored improvements for each supported language
-- **Chunked Processing**: Handles large codebases by intelligent chunking
+### 3. History and Replay
 
-### Quality Assurance
-- **Fallback Mechanisms**: Safe fallback to original code if parsing fails
-- **Validation**: Ensures optimized code maintains original functionality
-- **Retry Logic**: Smart retries with progressive simplification
-- **Timeout Protection**: Prevents infinite loops with configurable timeouts
+- Stores recent runs in localStorage (`code_optimizer_history_v1`)
+- Lets you inspect previous outputs and load previous input/optimized code back into editor
 
-## 🛠️ Technical Specifications
+### 4. Reliability Features
 
-### Model Configuration
-- **Models**: Qwen2.5-0.5B/1.5B/3B-Instruct-Q4_0 (user-selectable)
-- **Framework**: LlamaCPP WebAssembly
-- **Memory**: 350MB (0.5B), 900MB (1.5B), 1.8GB (3B)
-- **Temperature**: 0.05 (consistent, focused output)
-- **Timeout**: 90 seconds (CPU inference)
-- **Token Limits**: Adaptive (300-1200 normal, 150-600 fast mode)
+- Inference timeout guard (90s)
+- Active cancel support from UI
+- Retry logic for empty/incomplete model output
+- Fallback to original code when output cannot be validated
 
-### Performance Optimizations
-- **Adaptive Token Limits**: Scales with code complexity
-- **Progressive Chunking**: Intelligent code splitting for large inputs
-- **Streaming Interface**: Real-time output during processing
-- **Memory Management**: Efficient resource cleanup and cancellation
-- **Fast Mode**: Shorter prompts, fewer retries, smaller token budgets for speed
+## Architecture Overview
 
-## 🚀 Getting Started
+The app uses a worker-centric design:
+
+- Main thread:
+  - React UI rendering
+  - Model selection UI
+  - History modal and theme controls
+  - Streaming text display and result panels
+- Worker thread (`src/workers/optimizer.worker.ts`):
+  - SDK/model initialization
+  - Download/load orchestration
+  - Static analysis + prompting + inference
+  - Chunking for larger inputs
+  - Result normalization and final payload emission
+
+Message-based communication is used between UI and worker (`INIT`, `START_OPTIMIZATION`, `CANCEL_OPTIMIZATION`).
+
+## Model and Runtime Details
+
+Registered models:
+
+- `qwen2.5-0.5b-instruct-q4_0` (approx memory requirement: 350MB)
+- `qwen2.5-1.5b-instruct-q4_0` (approx memory requirement: 900MB)
+- `qwen2.5-3b-instruct-q4_0` (approx memory requirement: 1.8GB)
+
+Runtime tuning:
+
+- Temperature: `0.05`
+- Timeout: `90_000ms`
+- Input chunk threshold: 80 lines
+- Adaptive token budgets (normal + fast variants)
+
+## Project Structure
+
+```text
+web-starter-app/
+|-- src/
+|   |-- components/
+|   |-- hooks/
+|   |-- lib/
+|   |-- styles/
+|   |-- types/
+|   |-- workers/
+|   `-- __tests__/
+|-- public/
+|-- tests/
+|-- README.md
+|-- optima_v2_architecture.md
+`-- project-root-structure.md
+```
+
+Detailed structure and responsibilities:
+
+- `optima_v2_architecture.md`
+- `project-root-structure.md`
+
+## Setup
 
 ### Prerequisites
-- Modern browser with WebAssembly support (Chrome 96+, Edge 96+)
-- 350MB-1.8GB available memory (depends on selected model)
-- HTTPS or localhost for SharedArrayBuffer support
 
-### Installation & Development
+- Node.js 18+ (recommended)
+- npm 9+
+- Modern Chromium-based browser recommended for best WebAssembly/WebGPU behavior
+
+### Install
+
 ```bash
-# Install dependencies
 npm install
+```
 
-# Start development server
+### Run Development Server
+
+```bash
 npm run dev
+```
 
-# Build for production
+Open `http://localhost:5173`.
+
+### Build
+
+```bash
 npm run build
 ```
 
-### Quick Start
-1. Open `http://localhost:5173` in your browser
-2. Choose a model (0.5B/1.5B/3B) and wait for download
-3. Paste your code and click "Optimize Code"
-4. Toggle **Fast** for quicker results (shorter prompts, fewer retries)
-5. View results in Overview, Code, Diff, and Explain tabs
+### Preview Production Build
 
-## 📁 Project Structure
-
-```
-OPTIMA/
-├── src/
-│   ├── components/
-│   │   ├── CodeOptimizerTab.tsx      # Main UI component
-│   │   ├── OverviewPanel.tsx          # Analysis overview
-│   │   ├── ExplainPanel.tsx           # Detailed explanations
-│   │   └── DiffViewer.tsx            # Code diff viewer
-│   ├── workers/
-│   │   └── optimizer_worker.ts       # Optimization engine
-│   ├── lib/
-│   │   ├── promptBuilder.ts           # Smart prompt construction
-│   │   ├── staticAnalyzer.ts          # Code analysis
-│   │   └── codeDiff.ts               # Diff utilities
-│   ├── hooks/
-│   │   └── useModelLoader.ts          # Model state management
-│   └── styles/
-│       └── index.css                  # Premium glassmorphism UI
-├── index.html                         # App entry point
-├── package.json                       # Dependencies & scripts
-└── README.md                         # This file
+```bash
+npm run preview
 ```
 
-## 🔧 Configuration
+## Test Commands
 
-### Environment Variables
-- `VITE_*`: Standard Vite environment variables
-- Model downloads cached in browser storage automatically
+- `npm run test`
+- `npm run test:ui`
+- `npm run test:coverage`
 
-### Build Configuration
-- **Vite**: Modern build tool with hot reload
-- **TypeScript**: Strict type checking and compilation
-- **CSS**: Glassmorphism design system with CSS variables
+## How to Use
 
-## 🎨 Design System
+1. Start the app.
+2. Select a model and wait for download/load.
+3. Paste code in the input panel.
+4. Choose language and optimization focus.
+5. Toggle Fast mode if you prefer lower latency.
+6. Click `Optimize Code`.
+7. Inspect output in Overview, Code, Diff, and Explain tabs.
+8. Optionally load historical runs from History modal.
 
-### Visual Features
-- **Glassmorphism**: Modern frosted glass effect
-- **Dark/Light Themes**: Automatic theme detection
-- **Responsive Design**: Works on all screen sizes
-- **Micro-interactions**: Subtle animations and transitions
-- **Loading States**: Comprehensive loading indicators and progress
+## Configuration and Persistence
 
-### Color Palette
-- **Primary**: Purple gradient (#7c6af7 → #3dd6f5)
-- **Success**: Green (#22c55e)
-- **Danger**: Red (#f87171)
-- **Accent**: Cyan (#3dd6f5)
-- **Text**: High contrast for readability
+Local keys currently used:
 
-## 🔒 Security & Privacy
+- `code_optimizer_history_v1`
+- `darkMode`
+- `optima_model_cached_v1`
 
-### Privacy Guarantees
-- **100% Local Processing**: No code sent to external servers
-- **No Data Collection**: No analytics or tracking
-- **Temporary Storage**: Model cached only in browser storage
-- **Secure Execution**: Sandboxed WebAssembly environment
+Model assets are downloaded and cached by the SDK/browser storage layer.
 
-### Security Features
-- **Input Validation**: Safe code parsing and handling
-- **Memory Bounds**: Configurable memory limits
-- **Timeout Protection**: Prevents resource exhaustion
-- **Error Handling**: Graceful failure recovery
+## Privacy and Security Notes
 
-## 🐛 Troubleshooting
+- Code processing is local in-browser for this app implementation.
+- No explicit backend inference route is defined in this repository.
+- History is client-side only (localStorage).
 
-### Common Issues
-- **Model Loading**: Ensure sufficient memory and stable internet
-- **WebAssembly**: Check browser compatibility and enable WASM
-- **Performance**: Close other tabs to free up memory
-- **CORS**: Use HTTPS or localhost for SharedArrayBuffer
+## Troubleshooting
 
-### Debug Mode
-- **Browser Console**: Press F12 for detailed error messages
-- **Network Tab**: Monitor model download progress
-- **Storage**: Clear browser cache if model corrupted
+### Model does not load
 
-## 📈 Performance
+- Check network connectivity for first-time model download
+- Ensure sufficient available memory for selected model
+- Try a smaller model (0.5B) first
+- Refresh page and retry
 
-### Benchmarks
-- **Small Functions** (< 15 lines): ~2-5 seconds (normal), ~1-3 seconds (fast)
-- **Medium Algorithms** (15-40 lines): ~5-15 seconds (normal), ~3-8 seconds (fast)
-- **Large Codebases** (40+ lines): ~10-30 seconds (normal), ~6-18 seconds (fast)
-- **Memory Usage**: ~350MB (0.5B), ~900MB (1.5B), ~1.8GB (3B) during inference
+### Slow optimization
 
-### Optimization Impact
-- **Algorithmic**: O(n²) → O(n) improvements when possible
-- **Memory**: Reduced allocations and better data structures
-- **Readability**: Cleaner, more idiomatic code patterns
+- Enable Fast mode
+- Use smaller input snippet
+- Close heavy browser tabs/applications
+- Prefer 0.5B/1.5B model for lower latency
 
-## 🤝 Contributing
+### Output looks incomplete
 
-### Development Guidelines
-- **Performance First**: Prioritize user experience and speed
-- **Type Safety**: Strict TypeScript usage throughout
-- **Modern Patterns**: Use current React and JavaScript best practices
-- **Component Architecture**: Maintainable, reusable components
+- Retry optimization once
+- Disable Fast mode for more complete outputs
+- Reduce input size and optimize sections separately
 
-### Code Style
-- **Consistent Formatting**: Use project's ESLint configuration
-- **Clear Naming**: Descriptive variable and function names
-- **Documentation**: Comment complex logic and algorithms
+### Browser compatibility issues
 
-## 📄 License
+- Use latest Chrome or Edge for best compatibility
+- Run via localhost or HTTPS context
 
-MIT License - See LICENSE file for details
+## Known Limitations
 
----
+- Placeholder components exist and are not yet feature-complete:
+  - `ChatTab.tsx`
+  - `VisionTab.tsx`
+  - `VoiceTab.tsx`
+  - `FloatingChatAgent.tsx`
+  - `ModelBanner.tsx`
+- `src/workers/vlm-worker.ts` is present but not part of the active UI path
+- Some type declarations in `src/types/index.ts` differ from current runtime worker message names
 
-**Built with ❤️ using RunAnywhere SDK - On-device AI that respects your privacy.**
+## Roadmap (High-Level)
 
-## 🆕 Recent Updates
+- Align worker runtime contract and type-level request/message definitions
+- Expand automated tests beyond current core coverage
+- Integrate or remove placeholder components based on product direction
+- Improve modularity of `CodeOptimizerTab.tsx` state/event handling
 
-### v1.2.0 — Fast Mode & Model Selection
-- ✨ **Fast Mode Toggle**: Ultra-fast optimization with shorter prompts and reduced retries
-- 🎛️ **Model Selection**: Choose between 0.5B, 1.5B, and 3B Qwen models at startup
-- 📊 **Dynamic Download Progress**: Real-time MB/GB display during model download
-- 🎨 **UI Improvements**: Centered model picker, better loading states
-- ⚡ **Performance**: Faster time-to-first-token, especially in Fast mode
+## License
+
+MIT

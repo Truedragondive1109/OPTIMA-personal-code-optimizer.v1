@@ -134,6 +134,7 @@ function detectAlgorithm(code: string): { label: string; complexity: string } {
 interface StructuralMetrics {
   maxDepth: number;
   loopCount: number;
+  loopNestingDepth: number;
   fnCount: number;
   lineCount: number;
 }
@@ -145,6 +146,9 @@ function measureStructure(code: string): StructuralMetrics {
   let loopCount = 0;
   let fnCount = 0;
 
+  let loopNestingDepth = 0;
+  let loopDepthStack: number[] = [];
+
   for (const line of lines) {
     const trimmed = line.trim();
     if (/\b(for|while|do)\b/.test(trimmed)) loopCount++;
@@ -152,18 +156,74 @@ function measureStructure(code: string): StructuralMetrics {
 
     const opens = (line.match(/\{/g) || []).length;
     const closes = (line.match(/\}/g) || []).length;
+
+    // Track loop nesting based on block depth at loop entry.
+    // This avoids falsely inflating complexity due to non-loop braces.
+    if (/\b(for|while|do)\b/.test(trimmed)) {
+      loopDepthStack.push(depth);
+      loopNestingDepth = Math.max(loopNestingDepth, loopDepthStack.length);
+    }
+
     depth += opens - closes;
     if (depth > maxDepth) maxDepth = depth;
+
+    // Remove loops whose scope has closed.
+    loopDepthStack = loopDepthStack.filter(d => depth > d);
   }
 
-  return { maxDepth, loopCount, fnCount, lineCount: lines.length };
+  return { maxDepth, loopCount, loopNestingDepth, fnCount, lineCount: lines.length };
 }
 
-function estimateComplexityFromMetrics(loopCount: number, maxDepth: number, algoComplexity: string): string {
+function detectRecursion(code: string): { isRecursive: boolean; isDivideAndConquer: boolean } {
+  // Very lightweight heuristic:
+  // - Find function names and see if they call themselves.
+  // - If we see two+ self calls and mid/left/right-ish identifiers, assume divide-and-conquer.
+  const fnNames = new Set<string>();
+
+  const jsFn = code.matchAll(/\bfunction\s+([A-Za-z_][A-Za-z0-9_]*)\s*\(/g);
+  for (const m of jsFn) fnNames.add(m[1]);
+
+  const pyFn = code.matchAll(/\bdef\s+([A-Za-z_][A-Za-z0-9_]*)\s*\(/g);
+  for (const m of pyFn) fnNames.add(m[1]);
+
+  // Simple TS/JS method-style: name(...) { ... }
+  const methodFn = code.matchAll(/^\s*([A-Za-z_][A-Za-z0-9_]*)\s*\([^)]*\)\s*\{/gm);
+  for (const m of methodFn) fnNames.add(m[1]);
+
+  let isRecursive = false;
+  let isDivideAndConquer = false;
+  for (const name of fnNames) {
+    const callRe = new RegExp(`\\b${name}\\s*\\(`, 'g');
+    const callCount = (code.match(callRe) || []).length;
+    // One match is the definition itself for `function name(` / `def name(`.
+    if (callCount >= 2) {
+      isRecursive = true;
+      const midLike = /\b(mid|middle|pivot|left|right|lo|hi)\b/i.test(code);
+      if (callCount >= 3 && midLike) {
+        isDivideAndConquer = true;
+      }
+      break;
+    }
+  }
+
+  return { isRecursive, isDivideAndConquer };
+}
+
+function estimateComplexityFromMetrics(
+  loopCount: number,
+  loopNestingDepth: number,
+  algoComplexity: string,
+  recursion: { isRecursive: boolean; isDivideAndConquer: boolean },
+): string {
   if (algoComplexity !== 'Unknown') return algoComplexity;
-  if (maxDepth >= 3 || loopCount >= 3) return 'O(n³) or worse';
-  if (maxDepth >= 2 || loopCount >= 2) return 'O(n²)';
-  if (loopCount === 1) return 'O(n)';
+
+  // Recursion heuristics trump raw loop counts.
+  if (recursion.isDivideAndConquer) return 'O(n log n) typical';
+  if (recursion.isRecursive) return 'O(n) to O(2ⁿ) (recursive)';
+
+  if (loopNestingDepth >= 3) return 'O(n³) or worse';
+  if (loopNestingDepth === 2) return 'O(n²)';
+  if (loopCount >= 1) return 'O(n)';
   return 'O(1)';
 }
 
@@ -475,9 +535,10 @@ function chunkCode(code: string): string[] {
  *  3. UI pattern cards in the Explain tab
  */
 export function analyzeCode(code: string, selectedLanguage: string): StaticAnalysis {
-  const { maxDepth, loopCount, fnCount, lineCount } = measureStructure(code);
+  const { maxDepth, loopCount, loopNestingDepth, fnCount, lineCount } = measureStructure(code);
   const { label: algoLabel, complexity: algoComplexity } = detectAlgorithm(code);
-  const estimated_complexity = estimateComplexityFromMetrics(loopCount, maxDepth, algoComplexity);
+  const recursion = detectRecursion(code);
+  const estimated_complexity = estimateComplexityFromMetrics(loopCount, loopNestingDepth, algoComplexity, recursion);
 
   const language = selectedLanguage !== 'TypeScript'
     ? selectedLanguage

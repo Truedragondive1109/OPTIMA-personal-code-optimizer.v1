@@ -22,6 +22,7 @@ export interface OptimizationResult {
     detected_patterns?: Array<{ type: string; description: string; severity: string }>;
     possible_optimizations?: Array<{ action: string; rationale: string; expectedImpact: string }>;
     static_confidence_score?: number;
+    timings_ms?: Record<string, number>;
     _parsed: boolean;
     _no_change: boolean;
     _c_language?: boolean;
@@ -70,12 +71,10 @@ function add(a, b) {
 }
 \`\`\`
 Output:
-\`\`\`javascript
 function add(a, b) {
   const result = a + b;
   return result;
 }
-\`\`\`
 ### END EXAMPLE`.trim(),
 
     TypeScript: `
@@ -91,11 +90,9 @@ function getNames(users: Array<{ name: string }>): string[] {
 }
 \`\`\`
 Output:
-\`\`\`typescript
 function getNames(users: Array<{ name: string }>): string[] {
   return users.map(u => u.name);
 }
-\`\`\`
 ### END EXAMPLE`.trim(),
 
     Python: `
@@ -111,7 +108,6 @@ def bubble_sort(arr):
     return arr
 \`\`\`
 Output:
-\`\`\`python
 def bubble_sort(arr):
     n = len(arr)
     for i in range(n - 1):
@@ -123,31 +119,32 @@ def bubble_sort(arr):
         if not swapped:
             break
     return arr
-\`\`\`
 ### END EXAMPLE`.trim(),
 
     Java: `
 ### EXAMPLE
 Input:
 \`\`\`java
-public int sumArray(int[] arr) {
-    int sum = 0;
-    for (int i = 0; i < arr.length; i++) {
-        sum = sum + arr[i];
+class Sum {
+    int sum(int[] a) {
+        int s = 0;
+        for (int i = 0; i < a.length; i++) {
+            s += a[i];
+        }
+        return s;
     }
-    return sum;
 }
 \`\`\`
 Output:
-\`\`\`java
-public int sumArray(int[] arr) {
-    int sum = 0;
-    for (int val : arr) {
-        sum += val;
+class Sum {
+    int sum(int[] a) {
+        int s = 0;
+        for (int v : a) {
+            s += v;
+        }
+        return s;
     }
-    return sum;
 }
-\`\`\`
 ### END EXAMPLE`.trim(),
 
     'C++': `
@@ -163,11 +160,9 @@ int findMax(std::vector<int>& v) {
 }
 \`\`\`
 Output:
-\`\`\`cpp
 int findMax(const std::vector<int>& v) {
     return *std::max_element(v.begin(), v.end());
 }
-\`\`\`
 ### END EXAMPLE`.trim(),
 };
 
@@ -214,7 +209,7 @@ export function buildStructuredPrompt(
         readability:      'improve clarity and naming',
         security:         'fix security issues',
         'best-practices': 'apply cleaner patterns',
-        all:              'improve overall quality',
+        all:              'fix all errors and imoprove the code',
     };
     const focusHint = focusMap[focus];
     const lang = analysis.language || 'JavaScript';
@@ -228,7 +223,8 @@ export function buildStructuredPrompt(
 
 ### YOUR TASK
 Optimize this ${lang} (focus: ${focusHint}).
-Return COMPLETE code in a fenced code block. Do not cut it off.
+Fix any syntax/type errors introduced by changes. Ensure it compiles/runs.
+Return ONLY the complete code. No markdown fences. No explanations.
 
 Input:
 \`\`\`${fenceTag}
@@ -260,7 +256,7 @@ export function buildPromptFast(
         readability:      'improve clarity',
         security:         'fix security issues',
         'best-practices': 'cleaner patterns',
-        all:              'improve overall quality',
+        all:              'fix all errors and improve overall code',
     };
     const hint = focusMap[focus];
     const fenceTag = FENCE_TAG[language] ?? language.toLowerCase();
@@ -268,8 +264,9 @@ export function buildPromptFast(
     // Very short system + no few-shot
     const userPrompt = `Optimize this ${language} (${hint}).
 Fix any syntax errors and type errors. Ensure the result compiles/runs.
-Return ONLY the complete code in a fenced code block. Do not explain.
+Return ONLY the complete code. No markdown fences. No explanations.
 
+Input:
 \`\`\`${fenceTag}
 ${code}
 \`\`\`
@@ -493,7 +490,11 @@ function extractCode(rawText: string): string | null {
     });
 
     const candidate = codeLines.join('\n').trim();
-    return candidate || null;
+    if (candidate) return candidate;
+
+    // If everything was filtered out as prose, fall back to the raw trimmed
+    // output rather than failing extraction.
+    return text || null;
 }
 
 // ---------------------------------------------------------------------------
@@ -705,6 +706,17 @@ export function normalizeLLMOutputFast(
 
     const noChange = normalizeCode(extracted) === normalizeCode(originalCode);
 
+    const similarity = calculateCodeSimilarity(originalCode, extracted);
+    let confidence = noChange ? 100 : Math.round((analysis.confidence_score ?? 0.45) * 100);
+    // Fast mode is more permissive, but we still adjust confidence based on how
+    // much the code drifted and whether we had to repair truncation.
+    if (similarity < 70) confidence = Math.min(confidence, 50);
+    else if (similarity < 80) confidence = Math.min(confidence, 60);
+    else if (similarity < 90) confidence = Math.min(confidence, 75);
+
+    if (parseWarning) confidence = Math.min(confidence, 50);
+    if (isC && confidence > 70 && !noChange) confidence = 70;
+
     return {
         algorithm:               analysis.detected_algorithm || 'Custom Logic',
         complexity_before:       analysis.estimated_complexity || 'Unknown',
@@ -714,7 +726,7 @@ export function normalizeLLMOutputFast(
         optimization_strategy:   noChange ? 'No change needed' : 'Fast mode optimization (light validation)',
         tradeoffs:               'None',
         estimated_improvement:   noChange ? 'No measurable improvement' : 'Fast mode optimization applied',
-        confidence:              noChange ? 100 : 45,
+        confidence,
         explanation:             noChange
                                     ? 'Code is already well-optimized. No meaningful changes found.'
                                     : 'Fast mode returned a quick optimization/fix with reduced validation.',

@@ -47,25 +47,88 @@ async function workerInitSDK(requestedModelId: string | null) {
     const { LlamaCPP } = await import('@runanywhere/web-llamacpp');
 
     // ── Attach GPU listener BEFORE register() to avoid race condition.
-    // The llamacpp.wasmLoaded event can fire synchronously during register,
-    // so any listener attached after is too late.
-    let gpuMode = 'cpu';
+    // The llamacpp.wasmLoaded event can fire synchronously during register.
+    // IMPORTANT: don't "lock in" cpu too early — on some devices the backend
+    // initializes slowly and the event arrives after a few seconds.
+    let accelerationMode: string = 'cpu';
+    let resolved = false;
     const gpuDetected = new Promise<string>((resolve) => {
         const unsub = EventBus.shared.on('llamacpp.wasmLoaded', (evt: any) => {
-            gpuMode = evt.accelerationMode ?? 'cpu';
-            unsub();
-            resolve(gpuMode);
+            accelerationMode = evt?.accelerationMode ?? 'cpu';
+
+            try {
+                // eslint-disable-next-line no-console
+                console.log('[optimizer.worker] llamacpp.wasmLoaded:', { accelerationMode, evt });
+            } catch {
+                // no-op
+            }
+
+            // Always notify the UI immediately on detection (even if a fallback
+            // previously resolved to cpu).
+            try {
+                self.postMessage({ type: 'accelerationMode', value: accelerationMode });
+
+                try {
+                    // eslint-disable-next-line no-console
+                    console.log('[optimizer.worker] posted accelerationMode to UI:', accelerationMode);
+                } catch {
+                    // no-op
+                }
+            } catch {
+                // no-op
+            }
+
+            if (!resolved) {
+                resolved = true;
+                unsub();
+                resolve(accelerationMode);
+
+                try {
+                    // eslint-disable-next-line no-console
+                    console.log('[optimizer.worker] gpuDetected resolved from event:', accelerationMode);
+                } catch {
+                    // no-op
+                }
+            }
         });
-        // Fallback: if event never fires, assume CPU after 3s
-        setTimeout(() => resolve('cpu'), 3000);
+
+        // Fallback: if event never fires, assume CPU after a larger window.
+        // (3s was too aggressive and caused false-cpu on WebGPU-capable devices.)
+        setTimeout(() => {
+            if (!resolved) {
+                resolved = true;
+                try {
+                    // eslint-disable-next-line no-console
+                    console.log('[optimizer.worker] gpuDetected fallback timeout -> cpu');
+                } catch {
+                    // no-op
+                }
+                resolve('cpu');
+            }
+        }, 15_000);
     });
 
     await RunAnywhere.initialize({ environment: SDKEnvironment.Production, debug: false });
     await LlamaCPP.register();
 
+    try {
+        // eslint-disable-next-line no-console
+        console.log('[optimizer.worker] LlamaCPP.register() completed');
+    } catch {
+        // no-op
+    }
+
     // Wait for GPU detection (resolves immediately if already fired)
-    const accelerationMode = await gpuDetected;
-    self.postMessage({ type: 'accelerationMode', value: accelerationMode });
+    // Note: we also post updates in the listener itself, to handle late events.
+    const resolvedMode = await gpuDetected;
+
+    try {
+        // eslint-disable-next-line no-console
+        console.log('[optimizer.worker] final resolvedMode:', resolvedMode);
+    } catch {
+        // no-op
+    }
+    self.postMessage({ type: 'accelerationMode', value: resolvedMode });
 
     RunAnywhere.registerModels([
         {
@@ -381,22 +444,56 @@ function chunkCode(code: string): string[] {
 }
 
 async function optimizeChunk(chunk: string, language: string, focus: OptimizationFocus, fastMode: boolean = false): Promise<string> {
+    const t0 = performance.now();
     const analysis = analyzeCode(chunk, language);
+    const tAnalysis = performance.now();
     const prompt = fastMode ? buildPromptFast(chunk, language, focus) : buildPrompt(chunk, language, focus, analysis);
+    const tPrompt = performance.now();
     
     self.postMessage({ type: 'substage', value: `Optimizing chunk...` });
     const maxTokens = fastMode ? getMaxTokensFast(chunk.split('\n').length) : getMaxTokens(chunk.split('\n').length);
     const modelOutput = await runLLMCall(prompt, chunk, language, 0, maxTokens, fastMode);
+    const tInfer = performance.now();
     
-    const parsed = normalizeLLMOutput(modelOutput, chunk, analysis, language);
+    const parsed = fastMode
+        ? normalizeLLMOutputFast(modelOutput, chunk, analysis, language)
+        : normalizeLLMOutput(modelOutput, chunk, analysis, language);
+    const tNorm = performance.now();
 
     // Only fall back to original if parsing genuinely failed (truncation,
     // missing named functions/imports, etc). A _parse_warning alone just means
     // a minor bracket repair was applied — the code is still usable.
     if (!parsed._parsed) {
         self.postMessage({ type: 'substage', value: `Using original chunk (could not validate output)` });
+        self.postMessage({
+            type: 'timing',
+            value: {
+                scope: 'chunk',
+                ms: {
+                    total: Math.round(tNorm - t0),
+                    analysis: Math.round(tAnalysis - t0),
+                    prompt: Math.round(tPrompt - tAnalysis),
+                    inference: Math.round(tInfer - tPrompt),
+                    normalize: Math.round(tNorm - tInfer),
+                },
+            },
+        });
         return chunk;
     }
+
+    self.postMessage({
+        type: 'timing',
+        value: {
+            scope: 'chunk',
+            ms: {
+                total: Math.round(tNorm - t0),
+                analysis: Math.round(tAnalysis - t0),
+                prompt: Math.round(tPrompt - tAnalysis),
+                inference: Math.round(tInfer - tPrompt),
+                normalize: Math.round(tNorm - tInfer),
+            },
+        },
+    });
 
     return parsed.optimized_code;
 }
@@ -450,12 +547,19 @@ self.onmessage = async (e: MessageEvent<any>) => {
         };
 
         try {
+            const tAll0 = performance.now();
+            const timings: Record<string, number> = {};
+
             self.postMessage({ type: 'stage', value: 'Understanding Code' });
+            const tA0 = performance.now();
             const analysis = analyzeCode(code, language);
+            timings.analysis = Math.round(performance.now() - tA0);
             self.postMessage({ type: 'analysis', value: analysis });
 
             // Check if code needs chunking
+            const tC0 = performance.now();
             const chunks = chunkCode(code);
+            timings.chunking = Math.round(performance.now() - tC0);
             let optimizedCode = code;
 
             if (chunks.length > 1) {
@@ -463,25 +567,36 @@ self.onmessage = async (e: MessageEvent<any>) => {
                 self.postMessage({ type: 'chunk_progress', value: { current: 0, total: chunks.length } });
                 
                 const optimizedChunks: string[] = [];
+                const tChunks0 = performance.now();
                 for (let i = 0; i < chunks.length; i++) {
                     self.postMessage({ type: 'chunk_progress', value: { current: i + 1, total: chunks.length } });
                     const optimizedChunk = await optimizeChunk(chunks[i], language, focus, fastMode);
                     optimizedChunks.push(optimizedChunk);
                 }
+                timings.chunk_opt_total = Math.round(performance.now() - tChunks0);
                 
                 optimizedCode = optimizedChunks.join('\n');
             } else {
                 // ── Single-chunk path ──────────────────────────────────────
+                const tP0 = performance.now();
                 const fullPrompt = fastMode ? buildPromptFast(code, language, focus) : buildPrompt(code, language, focus, analysis);
+                timings.prompt_build = Math.round(performance.now() - tP0);
                 self.postMessage({ type: 'stage', value: 'Optimizing' });
                 const maxTokens = fastMode ? getMaxTokensFast(code.split('\n').length) : getMaxTokens(code.split('\n').length);
+                const tI0 = performance.now();
                 const modelOutput = await runLLMCall(fullPrompt, code, language, 0, maxTokens, fastMode);
+                timings.inference = Math.round(performance.now() - tI0);
                 self.postMessage({ type: 'stream_idle' });
 
                 self.postMessage({ type: 'stage', value: 'Finalizing Output' });
+                const tN0 = performance.now();
                 const parsed = fastMode
                     ? normalizeLLMOutputFast(modelOutput, code, analysis, language)
                     : normalizeLLMOutput(modelOutput, code, analysis, language);
+                timings.normalize = Math.round(performance.now() - tN0);
+                
+                timings.total = Math.round(performance.now() - tAll0);
+                parsed.timings_ms = timings;
 
                 // Always send 'done' — never throw on a fallback result.
                 // parsed._no_change + parsed._parse_warning tells the UI it
@@ -513,6 +628,7 @@ self.onmessage = async (e: MessageEvent<any>) => {
                     detected_patterns:       finalAnalysis.detected_patterns,
                     possible_optimizations:  finalAnalysis.possible_optimizations,
                     static_confidence_score: finalAnalysis.confidence_score,
+                    timings_ms:              { ...timings, total: Math.round(performance.now() - tAll0) },
                     _parsed:                 true,
                     _no_change:              optimizedCode === code,
                 },
