@@ -59,6 +59,7 @@ function copyWasmPlugin(): Plugin {
 }
 
 export default defineConfig({
+  base: "/OPTIMA-personal-code-optimizer.v1/",
   plugins: [react(), copyWasmPlugin()],
   server: {
     headers: {
