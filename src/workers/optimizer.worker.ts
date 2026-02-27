@@ -1,12 +1,27 @@
 import { analyzeCode } from '../lib/staticAnalyzer';
-import { buildPrompt, normalizeLLMOutput } from '../lib/promptBuilder';
+import { buildPrompt, buildPromptFast, normalizeLLMOutput } from '../lib/promptBuilder';
 import { TextGeneration } from '@runanywhere/web-llamacpp';
 import type { OptimizationFocus } from '../lib/promptBuilder';
 
-const INFERENCE_TIMEOUT_MS = 90_000;          // Fix 2: 90s for CPU inference
-const MAX_NEW_TOKENS = 1200;                   // Fix 1: room for full sort algos
-const TEMPERATURE = 0.05;                      // Lower for more consistent output
-const MAX_INPUT_LINES = 80;                    // Fix 7: avoid chunking sort combos
+const INFERENCE_TIMEOUT_MS = 90_000;          // 90s for CPU inference
+const TEMPERATURE = 0.05;                      // Low temp = consistent, focused output
+const MAX_INPUT_LINES = 80;                    // Avoid chunking sort combos
+
+/** Scale token budget to code size — prevents model rambling on tiny inputs */
+function getMaxTokens(lineCount: number): number {
+    if (lineCount <= 15)  return 300;   // tiny: simple function, return fast
+    if (lineCount <= 40)  return 600;   // medium: one class or algorithm
+    if (lineCount <= 80)  return 900;   // large: full module
+    return 1200;                         // very large: chunked code
+}
+
+/** Fast mode uses a much smaller token budget to reduce latency */
+function getMaxTokensFast(lineCount: number): number {
+    if (lineCount <= 15)  return 150;
+    if (lineCount <= 40)  return 300;
+    if (lineCount <= 80)  return 500;
+    return 600;
+}
 
 let modelLoaded = false;
 let modelInitializing = false;
@@ -19,7 +34,7 @@ class InferenceTimeoutError extends Error {
     }
 }
 
-async function workerInitSDK() {
+async function workerInitSDK(requestedModelId: string | null) {
     const {
         RunAnywhere,
         SDKEnvironment,
@@ -31,12 +46,26 @@ async function workerInitSDK() {
 
     const { LlamaCPP } = await import('@runanywhere/web-llamacpp');
 
-    await RunAnywhere.initialize({ environment: SDKEnvironment.Development, debug: false });
+    // ── Attach GPU listener BEFORE register() to avoid race condition.
+    // The llamacpp.wasmLoaded event can fire synchronously during register,
+    // so any listener attached after is too late.
+    let gpuMode = 'cpu';
+    const gpuDetected = new Promise<string>((resolve) => {
+        const unsub = EventBus.shared.on('llamacpp.wasmLoaded', (evt: any) => {
+            gpuMode = evt.accelerationMode ?? 'cpu';
+            unsub();
+            resolve(gpuMode);
+        });
+        // Fallback: if event never fires, assume CPU after 3s
+        setTimeout(() => resolve('cpu'), 3000);
+    });
+
+    await RunAnywhere.initialize({ environment: SDKEnvironment.Production, debug: false });
     await LlamaCPP.register();
 
-    EventBus.shared.on('llamacpp.wasmLoaded', (evt: any) => {
-        self.postMessage({ type: 'accelerationMode', value: evt.accelerationMode ?? 'cpu' });
-    });
+    // Wait for GPU detection (resolves immediately if already fired)
+    const accelerationMode = await gpuDetected;
+    self.postMessage({ type: 'accelerationMode', value: accelerationMode });
 
     RunAnywhere.registerModels([
         {
@@ -48,30 +77,84 @@ async function workerInitSDK() {
             modality: ModelCategory.Language,
             memoryRequirement: 350_000_000,
         },
+        {
+            id: 'qwen2.5-1.5b-instruct-q4_0',
+            name: 'Qwen2.5 1.5B Instruct Q4_0',
+            repo: 'Qwen/Qwen2.5-1.5B-Instruct-GGUF',
+            files: ['qwen2.5-1.5b-instruct-q4_0.gguf'],
+            framework: LLMFramework.LlamaCpp,
+            modality: ModelCategory.Language,
+            memoryRequirement: 900_000_000,
+        },
+        {
+            id: 'qwen2.5-3b-instruct-q4_0',
+            name: 'Qwen2.5 3B Instruct Q4_0',
+            repo: 'Qwen/Qwen2.5-3B-Instruct-GGUF',
+            files: ['qwen2.5-3b-instruct-q4_0.gguf'],
+            framework: LLMFramework.LlamaCpp,
+            modality: ModelCategory.Language,
+            memoryRequirement: 1_800_000_000,
+        },
     ]);
 
-    const model = ModelManager.getModels().find((m: any) => m.modality === ModelCategory.Language);
+    const models = ModelManager.getModels();
+    const model = requestedModelId
+        ? models.find((m: any) => m.id === requestedModelId)
+        : null;
+
     if (!model) {
-        throw new Error('No language model registered in worker');
+        throw new Error('No model selected. Please pick a model to download and load.');
     }
 
+    self.postMessage({ type: 'model_selected', value: { id: model.id, name: model.name } });
+
     const status = String(model.status).toLowerCase();
-    if (status !== 'downloaded' && status !== 'loaded') {
+    const isCached = status === 'downloaded' || status === 'loaded';
+
+    // Tell the UI immediately whether this is a cold start or warm start.
+    // UI uses this to show "Downloading model..." vs "Restoring from cache..."
+    self.postMessage({ type: 'cached', value: isCached });
+
+    const downloadIfNeeded = async (m: any) => {
+        const st = String(m.status).toLowerCase();
+        const cached = st === 'downloaded' || st === 'loaded';
+
+        self.postMessage({ type: 'cached', value: cached });
+
+        if (cached) {
+            self.postMessage({ type: 'progress', value: 1 });
+            return;
+        }
+
         self.postMessage({ type: 'status', value: 'initializing' });
         const unsub = EventBus.shared.on('model.downloadProgress', (evt: any) => {
-            if (evt.modelId === model.id) {
+            if (evt.modelId === m.id) {
                 self.postMessage({ type: 'progress', value: evt.progress ?? 0 });
+
+                const loadedBytes =
+                    evt.loadedBytes ?? evt.downloadedBytes ?? evt.receivedBytes ?? evt.bytesDownloaded;
+                const totalBytes =
+                    evt.totalBytes ?? evt.sizeBytes ?? evt.bytesTotal ?? evt.totalSize;
+
+                if (typeof loadedBytes === 'number' || typeof totalBytes === 'number') {
+                    self.postMessage({
+                        type: 'download_bytes',
+                        value: {
+                            loadedBytes: typeof loadedBytes === 'number' ? loadedBytes : null,
+                            totalBytes: typeof totalBytes === 'number' ? totalBytes : null,
+                        },
+                    });
+                }
             }
         });
 
         try {
-            await ModelManager.downloadModel(model.id);
+            await ModelManager.downloadModel(m.id);
             self.postMessage({ type: 'progress', value: 1 });
         } catch (err: any) {
-            // If download fails, check if it was already downloaded
-            const models = ModelManager.getModels();
-            const currentModel = models.find((m: any) => m.id === model.id);
-            const currentStatus = String(currentModel?.status || '').toLowerCase();
+            const currentStatus = String(
+                ModelManager.getModels().find((x: any) => x.id === m.id)?.status || ''
+            ).toLowerCase();
             if (currentStatus === 'downloaded' || currentStatus === 'loaded') {
                 self.postMessage({ type: 'progress', value: 1 });
             } else {
@@ -80,8 +163,11 @@ async function workerInitSDK() {
         } finally {
             unsub();
         }
-    }
+    };
 
+    await downloadIfNeeded(model);
+
+    // ── Load weights into memory (always required, even on warm start)
     self.postMessage({ type: 'status', value: 'loading_model' });
 
     const loadedModel = ModelManager.getLoadedModel(ModelCategory.Language);
@@ -92,9 +178,7 @@ async function workerInitSDK() {
         }
 
         const ok = await ModelManager.loadModel(model.id, { coexist: false });
-        if (!ok) {
-            throw new Error('Model loading failed');
-        }
+        if (!ok) throw new Error('Model loading failed');
     }
 }
 
@@ -104,29 +188,79 @@ async function runLLMCall(
     originalCode: string = '',
     language: string = '',
     retryCount: number = 0,
+    maxTokens: number = 600,
+    fastMode: boolean = false,
 ): Promise<string> {
     let output = '';
     let firstTokenSent = false;
     let timeoutId: ReturnType<typeof setTimeout> | null = null;
+    let firstTokenWatchdog: ReturnType<typeof setTimeout> | null = null;
     let localCancel: (() => void) | null = null;
 
     try {
         const { stream, result, cancel } = await TextGeneration.generateStream(prompt, {
-            max_new_tokens: MAX_NEW_TOKENS,
+            max_new_tokens: maxTokens,
             temperature: TEMPERATURE,
         } as any);
 
         localCancel = cancel;
         cancelCurrent = cancel;
 
-        const streamTask = (async () => {
-            for await (const token of stream) {
-                output += token;
-                if (!firstTokenSent) {
-                    firstTokenSent = true;
-                    self.postMessage({ type: 'stream_active' });
+        // Mark as streaming immediately (prefill can be slow before first token).
+        try {
+            self.postMessage({ type: 'stream_active' });
+        } catch {
+            // no-op
+        }
+
+        // If the model takes a long time to produce the first token, show a more accurate substage.
+        firstTokenWatchdog = setTimeout(() => {
+            if (!firstTokenSent) {
+                try {
+                    self.postMessage({ type: 'substage', value: 'Generating (waiting for first token)…' });
+                } catch {
+                    // no-op
                 }
             }
+        }, 7000);
+
+        const streamTask = (async () => {
+            let liveBuffer = '';
+            let lastFlush = 0;
+            const FLUSH_INTERVAL_MS = 50;
+            const FLUSH_MIN_CHARS = 120;
+
+            const flush = () => {
+                if (!liveBuffer) return;
+                try {
+                    self.postMessage({ type: 'chunk', value: liveBuffer });
+                } catch {
+                    // no-op
+                }
+                liveBuffer = '';
+                lastFlush = Date.now();
+            };
+
+            for await (const token of stream) {
+                output += token;
+
+                if (!firstTokenSent) {
+                    firstTokenSent = true;
+                    if (firstTokenWatchdog) {
+                        clearTimeout(firstTokenWatchdog);
+                        firstTokenWatchdog = null;
+                    }
+                    lastFlush = Date.now();
+                }
+
+                liveBuffer += token;
+                const now = Date.now();
+                if (liveBuffer.length >= FLUSH_MIN_CHARS || now - lastFlush >= FLUSH_INTERVAL_MS) {
+                    flush();
+                }
+            }
+
+            flush();
         })();
 
         await Promise.race([
@@ -143,6 +277,12 @@ async function runLLMCall(
             }),
         ]);
     } finally {
+        try {
+            self.postMessage({ type: 'stream_idle' });
+        } catch {
+            // no-op
+        }
+        if (firstTokenWatchdog) clearTimeout(firstTokenWatchdog);
         if (timeoutId) clearTimeout(timeoutId);
         if (localCancel) {
             try {
@@ -163,7 +303,7 @@ async function runLLMCall(
                 `Optimize this ${lang} code and return the complete result in a fenced code block:\n` +
                 `\`\`\`${fence}\n${originalCode}\n\`\`\`\nOutput:`;
             self.postMessage({ type: 'retry_clear' });
-            return runLLMCall(simplePrompt, originalCode, language, 1);
+            return runLLMCall(simplePrompt, originalCode, language, 1, maxTokens, fastMode);
         } else if (retryCount === 1) {
             const lang = language || 'code';
             const fence = lang.toLowerCase();
@@ -172,7 +312,7 @@ async function runLLMCall(
                 `Do not explain. Do not cut off.\n` +
                 `\`\`\`${fence}\n${originalCode}\n\`\`\`\nOutput:`;
             self.postMessage({ type: 'retry_clear' });
-            return runLLMCall(verySimplePrompt, originalCode, language, 2);
+            return runLLMCall(verySimplePrompt, originalCode, language, 2, maxTokens, fastMode);
         }
         throw new Error('Model returned empty output after retries');
     }
@@ -187,13 +327,15 @@ async function runLLMCall(
         output.match(/\b(if|for|while|function|class|def)\s*$/i) ||
         output.match(/(\{|\\|\/\*)\s*$/);
 
-    if (isIncomplete && retryCount < 2) {
+    // In fast mode, avoid most retries to keep speed
+    const maxRetries = fastMode ? 0 : 2;
+    if (isIncomplete && retryCount < maxRetries) {
         const completePrompt = prompt + '\n\nIMPORTANT: Return the COMPLETE optimized code, do not cut off mid-sentence.';
         self.postMessage({ type: 'retry_clear' });
-        return runLLMCall(completePrompt, originalCode, language, retryCount + 1);
+        return runLLMCall(completePrompt, originalCode, language, retryCount + 1, maxTokens, fastMode);
     }
 
-    return limitOutputToTokens(output, MAX_NEW_TOKENS);
+    return limitOutputToTokens(output, maxTokens);
 }
 
 function chunkCode(code: string): string[] {
@@ -238,12 +380,13 @@ function chunkCode(code: string): string[] {
     return chunks;
 }
 
-async function optimizeChunk(chunk: string, language: string, focus: OptimizationFocus): Promise<string> {
+async function optimizeChunk(chunk: string, language: string, focus: OptimizationFocus, fastMode: boolean = false): Promise<string> {
     const analysis = analyzeCode(chunk, language);
-    const prompt = buildPrompt(chunk, language, focus, analysis);
+    const prompt = fastMode ? buildPromptFast(chunk, language, focus) : buildPrompt(chunk, language, focus, analysis);
     
     self.postMessage({ type: 'substage', value: `Optimizing chunk...` });
-    const modelOutput = await runLLMCall(prompt, chunk, language);
+    const maxTokens = fastMode ? getMaxTokensFast(chunk.split('\n').length) : getMaxTokens(chunk.split('\n').length);
+    const modelOutput = await runLLMCall(prompt, chunk, language, 0, maxTokens, fastMode);
     
     const parsed = normalizeLLMOutput(modelOutput, chunk, analysis, language);
 
@@ -281,7 +424,8 @@ self.onmessage = async (e: MessageEvent<any>) => {
         try {
             modelInitializing = true;
             self.postMessage({ type: 'status', value: 'initializing' });
-            await workerInitSDK();
+            const requestedModelId: string | null = msg?.payload?.modelId ?? null;
+            await workerInitSDK(requestedModelId);
             modelLoaded = true;
             modelInitializing = false;
             self.postMessage({ type: 'READY' });
@@ -298,10 +442,11 @@ self.onmessage = async (e: MessageEvent<any>) => {
             return;
         }
 
-        const { code, language, focus } = msg.payload as {
+        const { code, language, focus, fastMode = false } = msg.payload as {
             code: string;
             language: string;
             focus: OptimizationFocus;
+            fastMode?: boolean;
         };
 
         try {
@@ -320,16 +465,17 @@ self.onmessage = async (e: MessageEvent<any>) => {
                 const optimizedChunks: string[] = [];
                 for (let i = 0; i < chunks.length; i++) {
                     self.postMessage({ type: 'chunk_progress', value: { current: i + 1, total: chunks.length } });
-                    const optimizedChunk = await optimizeChunk(chunks[i], language, focus);
+                    const optimizedChunk = await optimizeChunk(chunks[i], language, focus, fastMode);
                     optimizedChunks.push(optimizedChunk);
                 }
                 
                 optimizedCode = optimizedChunks.join('\n');
             } else {
                 // ── Single-chunk path ──────────────────────────────────────
-                const fullPrompt = buildPrompt(code, language, focus, analysis);
+                const fullPrompt = fastMode ? buildPromptFast(code, language, focus) : buildPrompt(code, language, focus, analysis);
                 self.postMessage({ type: 'stage', value: 'Optimizing' });
-                const modelOutput = await runLLMCall(fullPrompt, code, language);
+                const maxTokens = fastMode ? getMaxTokensFast(code.split('\n').length) : getMaxTokens(code.split('\n').length);
+                const modelOutput = await runLLMCall(fullPrompt, code, language, 0, maxTokens, fastMode);
                 self.postMessage({ type: 'stream_idle' });
 
                 self.postMessage({ type: 'stage', value: 'Finalizing Output' });

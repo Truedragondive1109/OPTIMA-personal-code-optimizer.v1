@@ -1,25 +1,36 @@
 import { useState, useEffect } from 'react';
-import OptimizerWorker from '../workers/optimizer_worker?worker';
+import OptimizerWorker from '../workers/optimizer.worker?worker';
 
 export type LoaderState = 'idle' | 'initializing' | 'loading_model' | 'ready' | 'error';
 
-// Global mutable state — shared across all React components without context overhead
+export type AvailableModel = {
+  id: string;
+  name: string;
+};
+
+const CACHE_KEY = 'optima_model_cached_v1';
+
+// Global mutable state
 export const sdkState = {
   status: 'idle' as LoaderState,
   progress: 0,
   error: null as string | null,
   accelerationMode: 'cpu' as 'cpu' | 'webgpu',
+  selectedModel: null as AvailableModel | null,
+  downloadedBytes: null as number | null,
+  totalBytes: null as number | null,
+  // Did the worker tell us the file is already in OPFS?
+  isCached: (() => {
+    try { return localStorage.getItem(CACHE_KEY) === 'true'; } catch { return false; }
+  })(),
 };
 
-// Lightweight pub-sub for React hooks
 const listeners = new Set<() => void>();
 function notifyListeners() {
   listeners.forEach((fn) => fn());
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Global singleton worker — created ONCE, shared across the whole app
-// ─────────────────────────────────────────────────────────────────────────────
+// Singleton worker
 export const globalWorker: Worker = new OptimizerWorker();
 
 globalWorker.addEventListener('message', (e) => {
@@ -44,27 +55,43 @@ globalWorker.addEventListener('message', (e) => {
       notifyListeners();
       break;
 
+    case 'download_bytes':
+      sdkState.downloadedBytes = msg.value?.loadedBytes ?? null;
+      sdkState.totalBytes = msg.value?.totalBytes ?? null;
+      notifyListeners();
+      break;
+
     case 'accelerationMode':
       sdkState.accelerationMode = msg.value;
+      notifyListeners();
+      break;
+
+    case 'cached':
+      // Worker confirmed file is in OPFS — persist so next load knows immediately
+      sdkState.isCached = msg.value as boolean;
+      try { localStorage.setItem(CACHE_KEY, String(msg.value)); } catch {}
+      notifyListeners();
+      break;
+
+    case 'model_selected':
+      sdkState.selectedModel = msg.value as AvailableModel;
       notifyListeners();
       break;
 
     case 'init-error':
       sdkState.status = 'error';
       sdkState.error = msg.value;
+      // If it errored, the cache might be corrupt — clear the flag
+      try { localStorage.removeItem(CACHE_KEY); } catch {}
       notifyListeners();
       break;
   }
 });
 
-// ─────────────────────────────────────────────────────────────────────────────
-// React hook — components subscribe to state changes
-// ─────────────────────────────────────────────────────────────────────────────
 export function useSDKState() {
   const [state, setState] = useState({ ...sdkState });
 
   useEffect(() => {
-    // Sync on mount in case state changed before component rendered
     setState({ ...sdkState });
     const handler = () => setState({ ...sdkState });
     listeners.add(handler);
@@ -74,9 +101,6 @@ export function useSDKState() {
   return state;
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Boot function — called once from App.tsx on mount
-// ─────────────────────────────────────────────────────────────────────────────
 export function initializeSDK() {
   if (sdkState.status !== 'idle' && sdkState.status !== 'error') return;
 
@@ -85,10 +109,17 @@ export function initializeSDK() {
   sdkState.progress = 0;
   notifyListeners();
 
-  // Add small delay to prevent rapid successive calls during hot reload
   setTimeout(() => {
     if (sdkState.status === 'initializing') {
-      globalWorker.postMessage({ type: 'INIT' });
+      globalWorker.postMessage({ type: 'INIT', payload: { modelId: sdkState.selectedModel?.id ?? null } });
     }
   }, 100);
+}
+
+export function initializeSDKWithModel(model: AvailableModel) {
+  if (sdkState.status !== 'idle' && sdkState.status !== 'error') return;
+  sdkState.selectedModel = model;
+  sdkState.downloadedBytes = null;
+  sdkState.totalBytes = null;
+  initializeSDK();
 }

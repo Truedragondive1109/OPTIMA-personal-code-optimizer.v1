@@ -250,6 +250,34 @@ export function buildPrompt(
     return fullPrompt;
 }
 
+export function buildPromptFast(
+    code: string,
+    language: string,
+    focus: OptimizationFocus,
+): string {
+    const focusMap: Record<OptimizationFocus, string> = {
+        performance:      'improve speed',
+        readability:      'improve clarity',
+        security:         'fix security issues',
+        'best-practices': 'cleaner patterns',
+        all:              'improve overall quality',
+    };
+    const hint = focusMap[focus];
+    const fenceTag = FENCE_TAG[language] ?? language.toLowerCase();
+
+    // Very short system + no few-shot
+    const userPrompt = `Optimize this ${language} (${hint}).
+Return ONLY the complete optimized code in a fenced code block. Do not explain.
+
+\`\`\`${fenceTag}
+${code}
+\`\`\`
+Output:`;
+
+    const systemPrompt = 'Optimize conservatively. Preserve behavior. Return only code.';
+    return `${systemPrompt}\n\n${userPrompt}`;
+}
+
 // ---------------------------------------------------------------------------
 // Code element extraction — used for validation
 // ---------------------------------------------------------------------------

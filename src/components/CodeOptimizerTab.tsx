@@ -1,9 +1,48 @@
 import { useState, useRef, useCallback, useEffect } from 'react';
-import { useSDKState, globalWorker, initializeSDK } from '../hooks/useModelLoader';
+import { useSDKState, globalWorker, initializeSDKWithModel } from '../hooks/useModelLoader';
 import { ExplainPanel } from './ExplainPanel';
 import { DiffViewer } from './DiffViewer';
 import OverviewPanel from './OverviewPanel';
 import { type OptimizationResult, type OptimizationFocus, isFullySupported } from '../lib/promptBuilder';
+
+ type HistoryEntry = {
+  id: string;
+  createdAt: number;
+  language: string;
+  focus: OptimizationFocus;
+  inputCode: string;
+  result: OptimizationResult;
+ };
+
+ const HISTORY_STORAGE_KEY = 'code_optimizer_history_v1';
+ const HISTORY_MAX_ENTRIES = 50;
+
+ function safeLoadHistory(): HistoryEntry[] {
+  try {
+    const raw = localStorage.getItem(HISTORY_STORAGE_KEY);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return [];
+    return parsed as HistoryEntry[];
+  } catch {
+    return [];
+  }
+ }
+
+ function safeSaveHistory(entries: HistoryEntry[]) {
+  try {
+    localStorage.setItem(HISTORY_STORAGE_KEY, JSON.stringify(entries));
+  } catch {
+    // ignore
+  }
+ }
+
+ function addHistoryEntry(entry: HistoryEntry): HistoryEntry[] {
+  const current = safeLoadHistory();
+  const next = [entry, ...current].slice(0, HISTORY_MAX_ENTRIES);
+  safeSaveHistory(next);
+  return next;
+ }
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Constants
@@ -136,59 +175,18 @@ type OutputTab = 'code' | 'diff' | 'explain' | 'overview';
 const STAGE_ORDER = ['Understanding Code', 'Optimizing', 'Refining Optimization', 'Finalizing Output'];
 
 function PipelineStages({ current }: { current: string }) {
-  // currentIdx is -1 when stage is 'idle' — treat as nothing active yet
-  const currentIdx = STAGE_ORDER.indexOf(current);
-
   return (
     <div className="pipeline-stages">
       {STAGE_ORDER.map((stage, i) => {
-        const isDone   = currentIdx > 0 && i < currentIdx;
-        const isActive = currentIdx >= 0 && stage === current;
-        const isPending = currentIdx < 0 || i > currentIdx;
-
+        const currentIdx = STAGE_ORDER.indexOf(current);
+        const isDone = i < currentIdx;
+        const isActive = stage === current;
         return (
-          <div key={stage} style={{ display: 'flex', alignItems: 'center' }}>
-            {/* Connector line between stages */}
-            {i > 0 && (
-              <div style={{
-                width: '24px',
-                height: '2px',
-                borderRadius: '2px',
-                flexShrink: 0,
-                transition: 'background 0.4s ease',
-                background: isDone
-                  ? 'var(--success)'
-                  : isActive
-                  ? 'linear-gradient(90deg, var(--success) 0%, var(--primary) 100%)'
-                  : 'rgba(255,255,255,0.08)',
-              }} />
-            )}
-
-            <div className={[
-              'pipeline-stage',
-              isDone   ? 'done'    : '',
-              isActive ? 'active'  : '',
-              isPending && currentIdx >= 0 ? 'pending' : '',
-            ].filter(Boolean).join(' ')}>
-
-              {/* Dot / icon */}
-              <div className="stage-dot">
-                {isDone
-                  ? <span style={{ fontSize: '11px', color: 'var(--success)', fontWeight: 700 }}>✓</span>
-                  : isActive
-                  ? <span className="stage-pulse" />
-                  : <span style={{
-                      display: 'inline-block',
-                      width: '7px', height: '7px',
-                      borderRadius: '50%',
-                      background: 'rgba(255,255,255,0.15)',
-                      border: '1px solid rgba(255,255,255,0.2)',
-                    }} />
-                }
-              </div>
-
-              <span className="stage-label">{stage}</span>
+          <div key={stage} className={`pipeline-stage ${isDone ? 'done' : ''} ${isActive ? 'active' : ''}`}>
+            <div className="stage-dot">
+              {isDone ? '✓' : isActive ? <span className="stage-pulse" /> : '○'}
             </div>
+            <span className="stage-label">{stage}</span>
           </div>
         );
       })}
@@ -204,16 +202,20 @@ export function CodeOptimizerTab() {
   const currentSdkState = useSDKState();
   const fileInputRef = useRef<HTMLInputElement>(null);
 
+  const lastRunRef = useRef<{ code: string; language: string; focus: OptimizationFocus } | null>(null);
+
   const [codeInput, setCodeInput] = useState('');
   const [language, setLanguage] = useState<string>('TypeScript');
   const [focus, setFocus] = useState<OptimizationFocus>('all');
   const [optimizing, setOptimizing] = useState(false);
+  const [fastMode, setFastMode] = useState(false);
   const [pipelineStage, setPipelineStage] = useState<string>('idle');
   const [result, setResult] = useState<OptimizationResult | null>(null);
 
   // Streaming
   const [streamedCode, setStreamedCode] = useState('');
   const [isStreamingCode, setIsStreamingCode] = useState(false);
+  const [showStreamingBox, setShowStreamingBox] = useState(true);
   const streamBufferRef = useRef('');
   const reqFrameRef = useRef<number | null>(null);
 
@@ -237,6 +239,19 @@ export function CodeOptimizerTab() {
     setTimeout(() => setToastMessage(null), 3000);
   }, []);
 
+  useEffect(() => {
+    const handler = (e: Event) => {
+      const detail = (e as CustomEvent<{ code: string; language?: string }>).detail;
+      if (!detail?.code) return;
+      setCodeInput(detail.code);
+      if (detail.language) setLanguage(detail.language);
+      showToast('Loaded from history');
+    };
+
+    window.addEventListener('optimizer:load_code', handler as EventListener);
+    return () => window.removeEventListener('optimizer:load_code', handler as EventListener);
+  }, [showToast]);
+
   // ── Worker message handler ─────────────────────────────────────────────────
   useEffect(() => {
     const handleWorkerMessage = (e: MessageEvent<any>) => {
@@ -251,6 +266,7 @@ export function CodeOptimizerTab() {
         setChunkProgress(msg.value);
       } else if (msg.type === 'stream_active') {
         setStreamActive(true);
+        setShowStreamingBox(true);
       } else if (msg.type === 'stream_idle') {
         setStreamActive(false);
       } else if (msg.type === 'retry_clear') {
@@ -261,6 +277,19 @@ export function CodeOptimizerTab() {
         streamBufferRef.current += msg.value;
       } else if (msg.type === 'done') {
         const parsed: OptimizationResult = msg.value;
+        const lastRun = lastRunRef.current;
+        if (lastRun) {
+          const entry: HistoryEntry = {
+            id: `${Date.now()}-${Math.random().toString(16).slice(2)}`,
+            createdAt: Date.now(),
+            language: lastRun.language,
+            focus: lastRun.focus,
+            inputCode: lastRun.code,
+            result: parsed,
+          };
+          addHistoryEntry(entry);
+          window.dispatchEvent(new CustomEvent('optimizer:history_updated'));
+        }
         streamBufferRef.current = '';
         setResult(parsed);
         setPipelineStage('done');
@@ -269,6 +298,7 @@ export function CodeOptimizerTab() {
         setSubStage('');
         setChunkProgress(null);
         setStreamActive(false);
+        setShowStreamingBox(false);
         setOutputTab('explain');
         showToast('Optimization complete!');
       } else if (msg.type === 'error') {
@@ -280,6 +310,7 @@ export function CodeOptimizerTab() {
         setSubStage('');
         setChunkProgress(null);
         setStreamActive(false);
+        setShowStreamingBox(false);
       }
     };
 
@@ -337,6 +368,7 @@ export function CodeOptimizerTab() {
     setSubStage('');
     setChunkProgress(null);
     setStreamActive(false);
+    setShowStreamingBox(false);
   }, []);
 
   const clearAll = useCallback(() => {
@@ -364,14 +396,16 @@ export function CodeOptimizerTab() {
     setResult(null);
     setStreamedCode('');
     setIsStreamingCode(true);
+    setShowStreamingBox(true);
     setOriginalForDiff(code);
+    lastRunRef.current = { code, language, focus };
     setOutputTab('code');
 
     globalWorker.postMessage({
       type: 'START_OPTIMIZATION',
-      payload: { code, language, focus }
+      payload: { code, language, focus, fastMode }
     });
-  }, [codeInput, optimizing, currentSdkState.status, language, focus]);
+  }, [codeInput, optimizing, currentSdkState.status, language, focus, fastMode]);
 
   // Keyboard shortcuts
   useEffect(() => {
@@ -395,6 +429,31 @@ export function CodeOptimizerTab() {
   const isModelError = modelStatus === 'error';
   const isModelIdle = modelStatus === 'idle';
   const isModelReady = modelStatus === 'ready';
+
+  const formatBytes = (n: number) => {
+    const gb = 1024 ** 3;
+    const mb = 1024 ** 2;
+    if (n >= gb) return `${(n / gb).toFixed(2)} GB`;
+    return `${Math.round(n / mb)} MB`;
+  };
+
+  const downloadLabel = (() => {
+    const loaded = currentSdkState.downloadedBytes;
+    const total = currentSdkState.totalBytes;
+    if (typeof loaded === 'number' && typeof total === 'number' && total > 0) {
+      return `Downloading ${formatBytes(loaded)} / ${formatBytes(total)}`;
+    }
+    if (typeof loaded === 'number') {
+      return `Downloaded ${formatBytes(loaded)}`;
+    }
+    return null;
+  })();
+
+  const MODELS = [
+    { id: 'qwen2.5-0.5b-instruct-q4_0', name: 'Qwen2.5 0.5B (Fast)' },
+    { id: 'qwen2.5-1.5b-instruct-q4_0', name: 'Qwen2.5 1.5B (Balanced)' },
+    { id: 'qwen2.5-3b-instruct-q4_0', name: 'Qwen2.5 3B (Best quality)' },
+  ] as const;
 
   const isProcessing = optimizing || isStreamingCode;
   const isResult = !optimizing && !isStreamingCode && result !== null;
@@ -589,24 +648,76 @@ export function CodeOptimizerTab() {
             {/* ─── MODEL LOADING STATE (inside output panel) ─── */}
             {(isModelLoading || isModelIdle) && !isProcessing && !isResult && (
               <div className="empty-state">
-                <div className="spinner" style={{ marginBottom: '1.5rem', width: '32px', height: '32px' }} />
-                <h3>Loading on-device model...</h3>
-                {currentSdkState.progress > 0 && currentSdkState.progress < 1 && (
-                  <div style={{ width: '200px', margin: '12px auto', height: '4px', borderRadius: '2px', background: 'var(--border)' }}>
-                    <div style={{
-                      height: '100%', borderRadius: '2px',
-                      background: 'var(--accent)',
-                      width: `${Math.round(currentSdkState.progress * 100)}%`,
-                      transition: 'width 0.3s ease',
-                    }} />
+                {isModelIdle ? (
+                  <div style={{ width: '100%', maxWidth: '520px', textAlign: 'center', margin: '0 auto' }}>
+                    <h3 style={{ marginBottom: '6px' }}>Choose a model</h3>
+                    <p style={{ color: 'var(--text-secondary)', margin: '0 auto', fontSize: '13px', textAlign: 'center', maxWidth: '520px' }}>
+                      Pick a Qwen model to download and load on-device. Nothing downloads until you select one.
+                    </p>
+                    <div style={{ display: 'grid', gridTemplateColumns: '1fr', gap: '10px', marginTop: '14px' }}>
+                      {MODELS.map((m) => (
+                        <button
+                          key={m.id}
+                          className="btn"
+                          style={{
+                            textAlign: 'left',
+                            padding: '12px 14px',
+                            display: 'flex',
+                            alignItems: 'center',
+                            justifyContent: 'space-between',
+                            gap: '12px',
+                            border: '1px solid var(--border)',
+                            background: 'var(--bg-secondary)',
+                          }}
+                          onClick={() => initializeSDKWithModel({ id: m.id, name: m.name })}
+                        >
+                          <span style={{ display: 'flex', flexDirection: 'column', gap: '2px' }}>
+                            <span style={{ fontWeight: 700, color: 'var(--text)' }}>{m.name}</span>
+                            <span style={{ fontSize: '12px', color: 'var(--text-secondary)' }}>{m.id}</span>
+                          </span>
+                          <span style={{ fontSize: '12px', color: 'var(--text-secondary)' }}>Download & Load</span>
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                ) : (
+                  <>
+                    <div className="spinner" style={{ marginBottom: '1.5rem', width: '32px', height: '32px' }} />
+                    <h3>
+                      {currentSdkState.isCached ? 'Restoring model...' : 'Downloading model...'}
+                      {currentSdkState.selectedModel?.name ? (
+                        <span style={{ display: 'block', fontSize: '12px', fontWeight: 600, marginTop: '6px', color: 'var(--text-secondary)' }}>
+                          {currentSdkState.selectedModel.name}
+                        </span>
+                      ) : null}
+                    </h3>
+                    {/* Progress bar — only meaningful during first download */}
+                    {!currentSdkState.isCached && currentSdkState.progress > 0 && currentSdkState.progress < 1 && (
+                      <div style={{ width: '200px', margin: '12px auto', height: '4px', borderRadius: '2px', background: 'var(--border)' }}>
+                        <div style={{
+                          height: '100%', borderRadius: '2px',
+                          background: 'var(--accent)',
+                          width: `${Math.round(currentSdkState.progress * 100)}%`,
+                          transition: 'width 0.3s ease',
+                        }} />
+                      </div>
+                    )}
+                    <p style={{ color: 'var(--text-secondary)', marginTop: '8px', fontSize: '13px' }}>
+                      {currentSdkState.isCached
+                        ? 'Loading weights into memory — this takes 5–15s on every page load'
+                        : (downloadLabel || 'Downloading model to your device. Cached locally after the first download.')}
+                    </p>
+                  </>
+                )}
+                {/* GPU badge */}
+                {currentSdkState.accelerationMode === 'webgpu' && (
+                  <div style={{ marginTop: '10px', display: 'inline-flex', alignItems: 'center', gap: '6px',
+                    fontSize: '11px', fontWeight: 600, color: 'var(--accent)',
+                    background: 'var(--accent-light)', border: '1px solid rgba(61,214,245,0.25)',
+                    borderRadius: '99px', padding: '3px 10px' }}>
+                    ⚡ GPU Accelerated
                   </div>
                 )}
-                <p style={{ color: 'var(--text-secondary)', marginTop: '8px', fontSize: '13px' }}>
-                  Initializing local AI engine — runs fully on your device
-                </p>
-                <p style={{ color: 'var(--text-light)', fontSize: '11px', marginTop: '4px' }}>
-                  First load downloads the model (~250 MB)
-                </p>
               </div>
             )}
 
@@ -633,7 +744,7 @@ export function CodeOptimizerTab() {
                     <li>Use Chrome 96+ or Edge 96+ (recommended: 120+)</li>
                     <li>Ensure WebAssembly is enabled in your browser</li>
                     <li>Check your internet connection (model download required on first use)</li>
-                    <li>Close other tabs/apps to free up memory (~250MB needed)</li>
+                    <li>Close other tabs/apps to free up memory (requirements depend on the selected model)</li>
                     <li>Try clearing browser cache and refreshing</li>
                     <li>Check browser console (F12) for detailed error messages</li>
                     <li>Ensure SharedArrayBuffer is available (requires HTTPS or localhost)</li>
@@ -660,7 +771,7 @@ export function CodeOptimizerTab() {
                   </ul>
                 </div>
                 <div style={{ display: 'flex', gap: '12px', justifyContent: 'center', flexWrap: 'wrap' }}>
-                  <button className="btn btn-primary" onClick={initializeSDK}>Retry</button>
+                  <button className="btn btn-primary" onClick={() => window.location.reload()}>Retry</button>
                   <button 
                     className="btn" 
                     onClick={() => {
@@ -685,10 +796,10 @@ export function CodeOptimizerTab() {
                             alert('Could not clear cache automatically. Please clear browser storage manually and refresh.');
                           }
                         }).catch(() => {
-                          initializeSDK();
+                          window.location.reload();
                         });
                       } else {
-                        initializeSDK();
+                        window.location.reload();
                       }
                     }}
                     title="Clear model cache and retry"
@@ -749,13 +860,26 @@ export function CodeOptimizerTab() {
                   </p>
                 </div>
 
-                {/* Streaming code preview — shows extracted code, never JSON */}
-                {streamedCode && (
-                  <pre className="code-preview" style={{ flex: 1, marginTop: '16px', padding: '12px', overflow: 'auto', fontSize: '12px', opacity: 0.85 }}>
-                    {streamedCode}
-                    <span className="stream-cursor">▍</span>
-                  </pre>
-                )}
+                <div className="stream-box" style={{ marginTop: '16px' }}>
+                  <button
+                    type="button"
+                    className="stream-box-toggle"
+                    onClick={() => setShowStreamingBox(v => !v)}
+                  >
+                    <span>Streaming output</span>
+                    <span style={{ display: 'inline-flex', alignItems: 'center', gap: '10px' }}>
+                      {streamActive && <span className="stream-live-pill">LIVE</span>}
+                      <span aria-hidden>{showStreamingBox ? '▾' : '▸'}</span>
+                    </span>
+                  </button>
+
+                  {showStreamingBox && (
+                    <pre className="stream-box-body">
+                      {streamedCode || (!streamActive ? 'Waiting for first token…' : '')}
+                      {streamActive && <span className="stream-cursor">▍</span>}
+                    </pre>
+                  )}
+                </div>
               </div>
             )}
 
@@ -816,15 +940,68 @@ export function CodeOptimizerTab() {
             Cancel
           </button>
         ) : (
-          <button
-            className="btn btn-primary btn-lg optimize-btn"
-            onClick={optimize}
-            disabled={!codeInput.trim() || !isModelReady}
-            title={isModelLoading ? 'Loading on-device AI...' : 'Ctrl+Enter'}
-          >
-            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z" /></svg>
-            {isModelLoading ? 'Loading model...' : isModelError ? 'Model unavailable' : 'Optimize Code'}
-          </button>
+          <div style={{ display: 'flex', gap: '10px', alignItems: 'center' }}>
+            <button
+              className="btn btn-primary btn-lg optimize-btn"
+              onClick={optimize}
+              disabled={!codeInput.trim() || !isModelReady}
+              title={isModelLoading ? 'Loading on-device AI...' : 'Ctrl+Enter'}
+            >
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z" /></svg>
+              {isModelLoading ? 'Loading model...' : isModelError ? 'Model unavailable' : fastMode ? 'Optimize (Fast)' : 'Optimize Code'}
+            </button>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+              <input
+                type="checkbox"
+                id="fast-mode-toggle"
+                checked={fastMode}
+                onChange={(e) => setFastMode(e.target.checked)}
+                disabled={optimizing}
+                style={{ display: 'none' }}
+              />
+              <label
+                htmlFor="fast-mode-toggle"
+                className={`fast-mode-toggle ${fastMode ? 'active' : ''}`}
+                style={{
+                  display: 'inline-flex',
+                  alignItems: 'center',
+                  gap: '6px',
+                  padding: '8px 12px',
+                  borderRadius: '8px',
+                  border: `1px solid ${fastMode ? 'var(--accent)' : 'var(--border)'}`,
+                  background: fastMode ? 'var(--accent-light)' : 'var(--bg-card)',
+                  color: fastMode ? 'var(--accent)' : 'var(--text-secondary)',
+                  fontSize: '12px',
+                  fontWeight: 600,
+                  cursor: optimizing ? 'not-allowed' : 'pointer',
+                  transition: 'all 0.2s ease',
+                  userSelect: 'none',
+                }}
+                title="Fast mode: shorter prompts, fewer retries, quicker results"
+              >
+                <span
+                  style={{
+                    width: '14px',
+                    height: '14px',
+                    borderRadius: '4px',
+                    border: `2px solid ${fastMode ? 'var(--accent)' : 'var(--border)'}`,
+                    background: fastMode ? 'var(--accent)' : 'transparent',
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    transition: 'all 0.2s ease',
+                  }}
+                >
+                  {fastMode && (
+                    <svg width="8" height="8" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3">
+                      <path d="M20 6L9 17l-5-5" />
+                    </svg>
+                  )}
+                </span>
+                Fast
+              </label>
+            </div>
+          </div>
         )}
       </div>
     </div>
